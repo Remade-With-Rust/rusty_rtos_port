@@ -9,7 +9,8 @@ order and the null-arm floor for anything timed.
 
 | gate | result | method |
 |---|---|---|
-| sim contract v1 implemented identically on both sides | yes | `kairos conform dynamic --ticks 100000` from the umbrella: 1,219,231 trace lines identical, and the counters with them. A port that delivered a tick one critical-section exit early or late would move every line after it, so the trace is the proof |
+| sim contract v1 implemented identically on both sides | yes | `kairos conform --all --ticks 100000` from the umbrella: 8,408,764 trace lines identical across nine scenarios, and the counters with them. A port that delivered a tick one critical-section exit early or late would move every line after it, so the trace is the proof |
+| the tail of a switched-out call is tallied, not counted | yes | `Port::begin_unwind` / `end_unwind`: a thread stops at the switch, a stackless call does not, so the abandoned frame's exits are charged to the task when it next runs. Counting them rather than discarding them is what `blocktim` needed — a tail can open a section of its own, and `xQueueReceive`'s timeout path does |
 | `ulKairosExits` at 100,000 ticks | 1,066,689 on both sides | the harness's `KAIROS_RESULT` line; on the C side from the patched `port.c`, here from `SimPort` |
 | `ulKairosYields` at 100,000 ticks | 179,588 on both sides | as above |
 | `unsafe` blocks in this package | 0 | `UNSAFE.md`; `forbid(unsafe_code)` in both crates. The silicon ports, which will have some, are K3 |

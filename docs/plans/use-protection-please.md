@@ -98,7 +98,7 @@ Evidence; excluded from the totals).
 | H-26 | ★ Fuzz target per public parser, decoder, or message handler | Incomplete | no parser yet | |
 | H-27 | ★ Continuous fuzzing with no open crashes | Incomplete | | |
 | H-28 | Property tests cover the documented invariants | Incomplete | | |
-| H-29 | Mutation and/or differential testing on critical modules | Completed | the sim port is diffed against the C Posix port through the kernel's trace: 1,219,231 lines and the exit/yield counters identical over 100,000 ticks (ledger) | |
+| H-29 | Mutation and/or differential testing on critical modules | Completed | the sim port is diffed against the C Posix port through the kernel's trace: 8,408,764 lines across nine scenarios and the exit/yield counters identical, 100,000 ticks each (ledger) | |
 
 ### Phase 7 — Formal verification
 

@@ -25,10 +25,18 @@ flashed" means no chip has run it.
 **K1 — the deterministic sim port is complete and proven.**
 
 `SimPort` carries the whole of sim contract v1 (umbrella `ORACLES.md`) and
-is proven against the C Posix port by a trace diff: 1,219,231 lines
-identical over 100,000 ticks, `ulKairosExits` and `ulKairosYields` equal.
-A port that delivered a tick one critical-section exit early or late would
-move every line after it, so the trace is the proof.
+is proven against the C Posix port by a trace diff: 8,408,764 lines
+identical across nine scenarios at 100,000 ticks each, `ulKairosExits` and
+`ulKairosYields` equal on every one. A port that delivered a tick one
+critical-section exit early or late would move every line after it, so the
+trace is the proof.
+
+The seam says one thing a threaded port never has to. A thread stops at the
+switch; a stackless kernel's call does not — the frame the scheduler
+abandoned runs to its end, closing the critical sections it had open and
+sometimes opening one of its own. So `begin_unwind` / `end_unwind` stop
+counting that tail as sim time and tally it instead, and the kernel replays
+the tally when the task next runs.
 
 Zero `unsafe` blocks. The silicon ports — Cortex-M, RISC-V, Xtensa, which
 do need `unsafe` at the context switch and the vector table — are K3, and

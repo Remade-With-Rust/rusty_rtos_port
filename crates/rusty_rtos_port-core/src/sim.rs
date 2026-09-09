@@ -63,14 +63,17 @@ pub struct SimPort {
     /// Whether the kernel is inside its tick entry (the C handler runs with
     /// signals blocked and does not recurse into the exit counter).
     in_isr: Cell<bool>,
-    /// Exits belonging to a call the scheduler switched away from.
+    /// Whether a switched-out frame's tail is running.
     ///
-    /// The sim has no stacks, so the outgoing task's remaining
-    /// `exit_critical` calls really do run — they are the tail of the
-    /// function the kernel is still inside. On a real port they sit on a
-    /// frozen stack and run when the task does, so they are ignored here
-    /// and replayed by the kernel when the task is switched back in.
-    swallow: Cell<u32>,
+    /// The sim has no stacks, so the outgoing task's call really does run
+    /// to its end — the sections it had open and any section it opens after
+    /// the switch. On a real port all of that sits on a frozen stack and
+    /// happens when the task runs again, so while this is set the exits are
+    /// tallied into [`SimPort::unwound`] instead of counted, and the kernel
+    /// replays the tally when the task is switched back in.
+    unwinding: Cell<bool>,
+    /// Outermost exits the running tail has made so far.
+    unwound: Cell<u32>,
 }
 
 impl SimPort {
@@ -87,7 +90,8 @@ impl SimPort {
             yield_pending: Cell::new(false),
             counting: Cell::new(false),
             in_isr: Cell::new(false),
-            swallow: Cell::new(0),
+            unwinding: Cell::new(false),
+            unwound: Cell::new(0),
         }
     }
 
@@ -142,10 +146,10 @@ impl SimPort {
         self.nesting.get()
     }
 
-    /// Exits still to be discarded from an abandoned call.
+    /// Whether a switched-out frame's tail is running.
     #[must_use]
-    pub fn swallowing(&self) -> u32 {
-        self.swallow.get()
+    pub fn is_unwinding(&self) -> bool {
+        self.unwinding.get()
     }
 }
 
@@ -165,13 +169,6 @@ impl Port for SimPort {
     }
 
     fn exit_critical(&self) {
-        // The tail of a call the scheduler abandoned: the C port's thread
-        // never runs these, so neither does the count.
-        let swallow = self.swallow.get();
-        if swallow > 0 {
-            self.swallow.set(swallow.saturating_sub(1));
-            return;
-        }
         let nesting = self.nesting.get().saturating_sub(1);
         self.nesting.set(nesting);
         // Rule 3, and the exact shape of the C patch: the count happens
@@ -179,6 +176,12 @@ impl Port for SimPort {
         // re-enabled, on a task only, and the kernel's own tick entry does
         // not recurse into it.
         if nesting == 0 && self.counting.get() && !self.in_isr.get() {
+            // The tail of a call the scheduler abandoned: the C port's
+            // thread has not run this yet, so it is not sim time yet.
+            if self.unwinding.get() {
+                self.unwound.set(self.unwound.get().saturating_add(1));
+                return;
+            }
             let exits = self.exits.get().wrapping_add(1);
             self.exits.set(exits);
             if exits.checked_rem(EXITS_PER_TICK) == Some(0) {
@@ -232,16 +235,16 @@ impl Port for SimPort {
         self.counting.set(true);
     }
 
-    fn take_nesting(&self) -> u32 {
-        self.nesting.replace(0)
+    fn begin_unwind(&self) {
+        self.unwinding.set(true);
+        self.unwound.set(0);
     }
 
-    fn set_nesting(&self, nesting: u32) {
-        self.nesting.set(nesting);
-    }
-
-    fn swallow_exits(&self, n: u32) {
-        self.swallow.set(self.swallow.get().saturating_add(n));
+    fn end_unwind(&self) -> u32 {
+        self.unwinding.set(false);
+        // The frame is gone; whatever it still had open went with it.
+        self.nesting.set(0);
+        self.unwound.replace(0)
     }
 }
 
@@ -302,6 +305,26 @@ mod tests {
         }
         Port::set_in_tick_entry(&p, false);
         assert_eq!(p.exits(), 0);
+    }
+
+    #[test]
+    fn a_tail_is_tallied_rather_than_counted() {
+        let p = SimPort::new();
+        Port::scheduler_started(&p);
+        // Two sections open when the scheduler switched away, and one more
+        // that the abandoned frame opens and closes afterwards: three
+        // exits, one of them not outermost, so two the task owes.
+        p.enter_critical();
+        p.enter_critical();
+        Port::begin_unwind(&p);
+        p.exit_critical();
+        p.exit_critical();
+        p.enter_critical();
+        p.exit_critical();
+        assert_eq!(p.exits(), 0, "none of that is sim time yet");
+        assert_eq!(Port::end_unwind(&p), 2);
+        assert_eq!(p.nesting(), 0, "the frame went with the switch");
+        assert!(!p.is_unwinding());
     }
 
     #[test]
