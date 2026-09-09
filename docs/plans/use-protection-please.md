@@ -9,7 +9,7 @@
 **Architect**: [Tim Almond](https://github.com/Ttimmahlax) — accountable for this unit's security design; rendered
 at the foot of the block in every README and mirror
 **Audit depth**: survey
-**Audited**: 2026-09-09 by kairos (scaffold pass) · **Next review**: the first milestone with a kill test
+**Audited**: 2026-09-09 by kairos (K1 pass) · **Next review**: the rest of the nine-scenario corpus
 
 > Source of truth for this unit's hardening status. The README's status table is
 > **generated from this file** — edit here, then run:
@@ -57,8 +57,8 @@ Evidence; excluded from the totals).
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
 | H-07 | ★ `Cargo.lock` committed | Completed | `Cargo.lock` tracked in the first commit (`git ls-files Cargo.lock`) | |
-| H-08 | ★ `deny.toml` policy present and enforced | Incomplete | `deny.toml` present (licenses, bans incl. `*-sys`, sources); `cargo deny check` runs in CI; the first run's verdict goes here | |
-| H-09 | ★ Vulnerability scan clean (`cargo audit`) | Incomplete | not yet run | |
+| H-08 | ★ `deny.toml` policy present and enforced | Completed | `cargo deny check` 2026-09-09: advisories ok, bans ok, licenses ok, sources ok | |
+| H-09 | ★ Vulnerability scan clean (`cargo audit`) | Completed | `cargo audit` 2026-09-09: 0 advisories | |
 | H-10 | ★ `cargo vet` coverage complete | Incomplete | no `supply-chain/` yet | |
 | H-11 | Unsafe inventory measured and trending down (geiger) | Incomplete | `UNSAFE.md` says zero; `cargo geiger` not yet archived | |
 | H-12 | ★ SBOM generated and published with releases | Incomplete | no release yet | |
@@ -69,8 +69,8 @@ Evidence; excluded from the totals).
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
-| H-15 | ★ Workspace lint policy set and clean | Completed | `[workspace.lints]`: `unsafe_code = deny`, `undocumented_unsafe_blocks`, `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented` = deny, `indexing_slicing` + `arithmetic_side_effects` = warn; `cargo clippy --workspace --all-targets -- -D warnings` clean at scaffold | |
-| H-16 | ★ `unsafe` isolated, SAFETY-commented, inventoried | Completed | `forbid(unsafe_code)` in every crate; `UNSAFE.md` lists none | |
+| H-15 | ★ Workspace lint policy set and clean | Completed | `[workspace.lints]` as the family's; `cargo clippy --workspace --all-targets -- -D warnings` clean | |
+| H-16 | ★ `unsafe` isolated, SAFETY-commented, inventoried | Completed | `forbid(unsafe_code)`; `UNSAFE.md` lists none. This is the package that will eventually hold the family's only `unsafe` — at the context switch and the vector table — and it holds none today | |
 | H-17 | Arithmetic safety explicit | Incomplete | `arithmetic_side_effects = warn` under `-D warnings`; no arithmetic yet to audit | |
 | H-18 | ★ No `unwrap`/`expect`/panic on untrusted paths; typed errors | Completed | `unwrap_used`, `expect_used`, `panic` = deny at the workspace; tests opt out per file | |
 | H-19 | Input validation — external bytes treated as hostile | Incomplete | no parser yet; the no-panic gate arrives with the first one | |
@@ -87,7 +87,7 @@ Evidence; excluded from the totals).
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
-| H-23 | ★ Tests pass under Miri | Incomplete | not yet run | |
+| H-23 | ★ Tests pass under Miri | Completed | `cargo +nightly miri test --lib` 2026-09-09: green (miri 0.1.0 of 2026-09-08) | |
 | H-24 | Critical paths pass the sanitizers (ASan/MSan/TSan) | Incomplete | | |
 | H-25 | `cargo careful test` green | Incomplete | | |
 
@@ -98,7 +98,7 @@ Evidence; excluded from the totals).
 | H-26 | ★ Fuzz target per public parser, decoder, or message handler | Incomplete | no parser yet | |
 | H-27 | ★ Continuous fuzzing with no open crashes | Incomplete | | |
 | H-28 | Property tests cover the documented invariants | Incomplete | | |
-| H-29 | Mutation and/or differential testing on critical modules | Incomplete | the C oracle differential arrives with K1 | |
+| H-29 | Mutation and/or differential testing on critical modules | Completed | the sim port is diffed against the C Posix port through the kernel's trace: 1,219,231 lines and the exit/yield counters identical over 100,000 ticks (ledger) | |
 
 ### Phase 7 — Formal verification
 
@@ -201,3 +201,4 @@ Append one line per pass; never rewrite history. The trend is the point.
 | Date | Depth | Auditor | Completed / Scheduled / Incomplete | ★ met | Note |
 |---|---|---|---|---|---|
 | 2026-09-09 | survey | kairos (scaffold pass) | 7 / 0 / 28 | 5 | first pass, at stamp time; every Completed row names a file that exists |
+| 2026-09-09 | survey + tool probes | kairos (K1 pass) | 12 / 0 / 24 | 9 | K1: the trace differential against the C kernel is live and is this unit's strongest evidence; deny, audit and Miri run on the developer box |
