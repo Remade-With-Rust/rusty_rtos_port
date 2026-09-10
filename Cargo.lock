@@ -20,3 +20,10 @@ version = "0.1.0"
 dependencies = [
  "rusty_rtos_core",
 ]
+
+[[package]]
+name = "rusty_rtos_port-cortex-m"
+version = "0.1.0"
+dependencies = [
+ "rusty_rtos_core",
+]
