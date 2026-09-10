@@ -123,6 +123,7 @@ extern "C" fn kairos_pick_next() {
 // Callee-saved registers are the ones the exception frame does not carry:
 // the hardware stacks r0-r3, r12, lr, pc and xPSR on entry, so r4-r11 are
 // ours to save. A task's saved SP therefore points at its r4.
+#[cfg(target_arch = "arm")]
 #[expect(unsafe_code, reason = "the context switch itself: see UNSAFE.md")]
 mod pendsv {
     use super::CURRENT_SP_SLOT;
@@ -223,6 +224,7 @@ extern "C" fn task_exited() -> ! {
 
 // -------------------------------------------------------------- primitives --
 
+#[cfg(target_arch = "arm")]
 #[inline]
 fn disable_interrupts() {
     // SAFETY: `cpsid i` only sets PRIMASK. It cannot fault and touches no
@@ -234,6 +236,15 @@ fn disable_interrupts() {
     compiler_fence(Ordering::SeqCst);
 }
 
+/// Off ARM there is no PRIMASK. The fence is kept so the ordering this
+/// function promises still holds for anything the host build does with it.
+#[cfg(not(target_arch = "arm"))]
+#[inline]
+fn disable_interrupts() {
+    compiler_fence(Ordering::SeqCst);
+}
+
+#[cfg(target_arch = "arm")]
 #[inline]
 fn enable_interrupts() {
     compiler_fence(Ordering::SeqCst);
@@ -244,6 +255,13 @@ fn enable_interrupts() {
     }
 }
 
+#[cfg(not(target_arch = "arm"))]
+#[inline]
+fn enable_interrupts() {
+    compiler_fence(Ordering::SeqCst);
+}
+
+#[cfg(target_arch = "arm")]
 #[inline]
 #[must_use]
 fn primask() -> u32 {
@@ -256,6 +274,16 @@ fn primask() -> u32 {
     r
 }
 
+/// Off ARM: "interrupts were enabled", which is the answer that makes the
+/// restore in `clear_interrupt_mask_from_isr` a no-op.
+#[cfg(not(target_arch = "arm"))]
+#[inline]
+#[must_use]
+const fn primask() -> u32 {
+    0
+}
+
+#[cfg(target_arch = "arm")]
 #[inline]
 #[must_use]
 fn ipsr() -> u32 {
@@ -268,6 +296,22 @@ fn ipsr() -> u32 {
     r
 }
 
+/// Off ARM there is no exception context to be in.
+#[cfg(not(target_arch = "arm"))]
+#[inline]
+#[must_use]
+const fn ipsr() -> u32 {
+    0
+}
+
+/// Off ARM there are no core peripherals to write, and writing to a
+/// made-up address would be exactly the unsound thing this crate exists to
+/// keep in one place. So the host build drops the write.
+#[cfg(not(target_arch = "arm"))]
+#[inline]
+fn write_reg(_addr: *mut u32, _value: u32) {}
+
+#[cfg(target_arch = "arm")]
 #[inline]
 fn write_reg(addr: *mut u32, value: u32) {
     // SAFETY: every caller passes one of the core peripheral addresses
@@ -382,10 +426,13 @@ impl Port for CortexMPort {
 
     fn idle(&self) {
         // `wfi` is the C port's idle: sleep until the next interrupt.
-        // SAFETY: `wfi` is a hint instruction; it cannot fault.
-        #[expect(unsafe_code, reason = "the idle instruction")]
-        unsafe {
-            core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+        #[cfg(target_arch = "arm")]
+        {
+            // SAFETY: `wfi` is a hint instruction; it cannot fault.
+            #[expect(unsafe_code, reason = "the idle instruction")]
+            unsafe {
+                core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+            }
         }
     }
 
@@ -415,11 +462,14 @@ pub fn pend_switch() {
     write_reg(ICSR, PENDSVSET);
     // The barriers the ARM ARM asks for after a write that changes
     // exception state.
-    // SAFETY: `dsb` and `isb` are barriers. They cannot fault, touch no
-    // memory, and change no register the compiler is tracking.
-    #[expect(unsafe_code, reason = "the architectural barriers after PENDSVSET")]
-    unsafe {
-        core::arch::asm!("dsb", "isb", options(nomem, nostack, preserves_flags));
+    #[cfg(target_arch = "arm")]
+    {
+        // SAFETY: `dsb` and `isb` are barriers. They cannot fault, touch
+        // no memory, and change no register the compiler is tracking.
+        #[expect(unsafe_code, reason = "the architectural barriers after PENDSVSET")]
+        unsafe {
+            core::arch::asm!("dsb", "isb", options(nomem, nostack, preserves_flags));
+        }
     }
 }
 
@@ -464,6 +514,7 @@ pub fn tick(port: &CortexMPort, switch_required: bool) {
 /// # Safety
 /// [`CURRENT_SP_SLOT`] must already name a slot holding a stack built by
 /// [`init_stack`], and a scheduler must be installed.
+#[cfg(target_arch = "arm")]
 #[expect(unsafe_code, reason = "the first-task start switches stacks")]
 pub unsafe fn start_first_task() -> ! {
     set_exception_priorities();
@@ -507,3 +558,9 @@ pub unsafe fn start_first_task() -> ! {
         )
     }
 }
+
+// There is deliberately NO non-ARM `start_first_task`. A stub would have
+// to panic or hang, and this crate may do neither; and nothing off ARM can
+// call it meaningfully anyway. Its absence is the honest signature: a host
+// build of this crate compiles, and a host build that tried to start a
+// task would not.
