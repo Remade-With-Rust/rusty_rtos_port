@@ -1,0 +1,26 @@
+[package]
+name = "mps2-an385-qemu-kernel"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rusty_rtos_port-cortex-m = { path = "../../crates/rusty_rtos_port-cortex-m" }
+# The scheduler itself. Siblings by git URL, as firmware/README.md says.
+rusty_rtos_kernel-core = { git = "https://github.com/Remade-With-Rust/rusty_rtos_kernel", default-features = false }
+rusty_rtos_core = { git = "https://github.com/Remade-With-Rust/rusty_rtos_core", default-features = false }
+
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+cortex-m-semihosting = "0.5"
+panic-semihosting = "0.6"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+
+[workspace]
