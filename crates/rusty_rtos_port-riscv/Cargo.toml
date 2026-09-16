@@ -1,0 +1,23 @@
+[package]
+name = "rusty_rtos_port-riscv"
+description = "The Kairos RISC-V port: critical sections, the yield, stack initialisation and the machine-software-interrupt context switch for RV32. One of the crates in the family allowed a fenced `unsafe` block."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/rusty_rtos_port-riscv"
+keywords = ["rtos", "riscv", "freertos", "embedded", "remade-with-rust"]
+categories = ["embedded", "no-std"]
+
+[dependencies]
+rusty_rtos_core = { version = "0.1.0", default-features = false }
+
+[features]
+default = []
+
+[lints]
+workspace = true

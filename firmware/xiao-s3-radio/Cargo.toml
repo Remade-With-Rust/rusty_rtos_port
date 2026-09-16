@@ -1,0 +1,53 @@
+[package]
+name = "xiao-s3-radio"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# The scheduler under test, by path.
+rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
+rusty_rtos_port-xtensa = { path = "../../crates/rusty_rtos_port-xtensa", default-features = false }
+# The family's allocator: the adapter must allocate, because the driver
+# hands out pointers and takes runtime sizes.
+rusty_rtos_alloc = { path = "../../../rusty_rtos_core/crates/rusty_rtos_alloc", default-features = false, features = [
+    "small-metal",
+] }
+
+# The seam, and the radio behind it.
+# `ipc-implementations` is what exposes `wait_queue` and the two task
+# priority methods; without it the driver is a smaller trait set.
+esp-radio-rtos-driver = { version = "=0.4.1", features = ["esp32s3", "ipc-implementations"] }
+# esp-radio is NOT linked yet, and the reason is a companion-set conflict
+# rather than a choice: `esp-radio 1.0.0-beta.0` -- the only published
+# radio -- pins `esp-hal ~1.1.0` and `esp-radio-rtos-driver 0.3.0`, while
+# every Kairos S3 cell pins `esp-hal =1.2.1`. `xtensa-lx-rt` is a `links`
+# crate, so the two esp-hal lines cannot coexist in one binary. Until that
+# is settled, this cell proves the SEAM: all five traits implemented and
+# registered against the driver.
+# esp-radio = { version = "=1.0.0-beta.0", features = ["esp32s3", "wifi"] }
+
+heapless = { version = "0.8", default-features = false }
+
+esp-hal = { version = "=1.2.1", features = ["esp32s3", "unstable"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", default-features = false, features = [
+    "esp32s3",
+    "jtag-serial",
+] }
+esp-backtrace = { version = "=0.20.0", features = [
+    "esp32s3",
+    "panic-handler",
+    "println",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+
+[workspace]

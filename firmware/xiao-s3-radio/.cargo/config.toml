@@ -1,0 +1,15 @@
+[build]
+target = "xtensa-esp32s3-none-elf"
+
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor"
+rustflags = [
+    # rusty_rtos_alloc's opt-ins, both required on a part this size.
+    "--cfg", "ra_single_threaded",
+    "--cfg", "ra_small_profile",
+    "-C", "link-arg=-Tlinkall.x",
+    "-C", "link-arg=-nostartfiles",
+]
+
+[unstable]
+build-std = ["core", "alloc"]

@@ -1,0 +1,25 @@
+[package]
+name = "riscv32-qemu-switch"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# The thing under test, by path, as firmware/README.md requires.
+rusty_rtos_port-riscv = { path = "../../crates/rusty_rtos_port-riscv", default-features = false }
+
+riscv-rt = "0.12"
+# Single-hart, so disabling interrupts IS the critical section.
+riscv = { version = "0.12", features = ["critical-section-single-hart"] }
+riscv-semihosting = "0.1"
+panic-halt = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+
+[workspace]

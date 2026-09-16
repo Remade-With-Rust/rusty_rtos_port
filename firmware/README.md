@@ -10,6 +10,12 @@ patches never leak into it.
 Naming: `<board>-<demo>/`, for example `lm3s6965-qemu-flash/` or
 `esp32c6-devkitc-blink/`.
 
+One cell here has no board: `host-kernel/` runs on the machine you are reading
+this on, through `rusty_rtos_port-host`. It is kept beside the others because
+it is the same kind of thing — one project, one port, one claim — and because
+it is the M3 scheduling cell's experiment moved off the chip, so the two are
+meant to be read together.
+
 | Chip class | Runtime | Target |
 |---|---|---|
 | Cortex-M3 (QEMU `lm3s6965evb`) | `cortex-m-rt` + `rusty_rtos_port-cortex-m` | `thumbv7m-none-eabi` |

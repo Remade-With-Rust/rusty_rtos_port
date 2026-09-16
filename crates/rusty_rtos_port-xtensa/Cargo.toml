@@ -1,0 +1,37 @@
+[package]
+name = "rusty_rtos_port-xtensa"
+description = "The Kairos Xtensa port: the windowed-ABI context switch and stack initialisation for ESP32 / ESP32-S3. One of the crates in the family allowed a fenced `unsafe` block."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/rusty_rtos_port-xtensa"
+keywords = ["rtos", "xtensa", "freertos", "embedded", "remade-with-rust"]
+categories = ["embedded", "no-std"]
+
+[dependencies]
+rusty_rtos_core = { version = "0.1.0", default-features = false }
+
+# Only on Xtensa: the trap frame this port switches BY COPYING is the one
+# `xtensa-lx-rt`'s interrupt entry fills in, windows already spilled. The
+# host build has no such thing and needs no such thing -- it exists so
+# callers keep type-checking on stable.
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+xtensa-lx = "0.12"
+# Pinned to what `esp-hal 1.2.1` resolves: `xtensa-lx-rt` is a `links`
+# crate, so two versions in one graph is a build error rather than a
+# duplicate.
+xtensa-lx-rt = "0.23"
+
+[features]
+default = []
+# The original ESP32 reserves Software0 for its Bluetooth stack, so the
+# switching interrupt moves to Software1 there.
+esp32 = []
+
+[lints]
+workspace = true

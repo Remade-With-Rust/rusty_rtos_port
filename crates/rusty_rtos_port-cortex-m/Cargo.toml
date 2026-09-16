@@ -8,11 +8,13 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/rusty_rtos_port-cortex-m"
 keywords = ["rtos", "cortex-m", "freertos", "embedded", "remade-with-rust"]
 categories = ["embedded", "no-std"]
 
 [dependencies]
-rusty_rtos_core = { version = "0.1.0", git = "https://github.com/Remade-With-Rust/rusty_rtos_core", default-features = false }
+rusty_rtos_core = { version = "0.1.0", default-features = false }
 
 [features]
 default = []

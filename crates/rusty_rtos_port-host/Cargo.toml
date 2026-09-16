@@ -1,0 +1,31 @@
+[package]
+name = "rusty_rtos_port-host"
+description = "The Kairos host port: one OS thread per task with a strict single-permit handoff, so a task written in C gets a REAL stack on a laptop. The shape FreeRTOS's own Posix port uses, for running the C ABI without an emulator."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/rusty_rtos_port-host"
+keywords = ["rtos", "freertos", "posix", "host", "remade-with-rust"]
+categories = ["os", "simulation"]
+
+[dependencies]
+# The house shape: depend on the published URL; `kairos patches` writes a
+# `.cargo/config.toml` that points it at the sibling checkout for local work.
+rusty_rtos_core = { version = "0.1.0", default-features = false, features = ["std"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+# The Unix half of the same job. Declarations of the platform's own thread and
+# signal calls -- the direct analogue of `windows-sys` above, and not a C build:
+# nothing here compiles a line of C.
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", default-features = false }
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+# Point this cell at the sibling checkouts, not at the published crates.
+#
+# The package-level `.cargo/config.toml` that `kairos patches` writes lists
+# only the crates `rusty_rtos_port` ITSELF depends on -- and it does not
+# depend on the kernel; only its cells do. So a cell that wants to prove
+# the local port against the local KERNEL has to say so here, or it
+# silently tests the port against whatever revision the lockfile pinned.
+#
+# That is not hypothetical: it hid a change to `Kernel` from this cell
+# entirely, and the cell reported PASS the whole time.
+[patch."https://github.com/Remade-With-Rust/rusty_rtos_kernel"]
+rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core" }
+
+[patch."https://github.com/Remade-With-Rust/rusty_rtos_core"]
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core" }

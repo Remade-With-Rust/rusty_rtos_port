@@ -1,0 +1,30 @@
+[package]
+name = "xiao-s3-switch"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rusty_rtos_port-xtensa = { path = "../../crates/rusty_rtos_port-xtensa", default-features = false }
+
+esp-hal = { version = "=1.2.1", features = ["esp32s3", "unstable"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", default-features = false, features = [
+    "esp32s3",
+    "jtag-serial",
+] }
+esp-backtrace = { version = "=0.20.0", features = [
+    "esp32s3",
+    "panic-handler",
+    "println",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+
+[workspace]

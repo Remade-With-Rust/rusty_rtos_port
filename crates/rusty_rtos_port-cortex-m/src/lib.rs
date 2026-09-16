@@ -348,6 +348,16 @@ pub struct CortexMPort {
     nesting: AtomicU32,
     yields: AtomicU32,
     ticks: AtomicU32,
+    /// PRIMASK as it was when the OUTERMOST critical section was entered.
+    ///
+    /// Without this, [`Port::exit_critical`] ends its outermost section
+    /// with an unconditional `cpsie i`, which enables interrupts even when
+    /// the caller had masked them itself and the kernel call was nested
+    /// *inside* that mask. The two ISR-side entry points a few lines below
+    /// have always saved and restored the mask; this is the same
+    /// discipline, and its absence here was a real defect -- see
+    /// `exit_critical`.
+    saved_primask: AtomicU32,
 }
 
 impl CortexMPort {
@@ -358,6 +368,7 @@ impl CortexMPort {
             nesting: AtomicU32::new(0),
             yields: AtomicU32::new(0),
             ticks: AtomicU32::new(0),
+            saved_primask: AtomicU32::new(0),
         }
     }
 
@@ -380,6 +391,22 @@ impl CortexMPort {
 }
 
 impl Port for CortexMPort {
+    /// This port SWITCHES STACKS, so the kernel must not commit a switch at
+    /// the point of the yield.
+    ///
+    /// `yield_now` can only pend a `PendSV`; the registers and the stack
+    /// move when that exception is taken. Between the two, code runs as a
+    /// task the kernel would already have moved on from -- and a blocking
+    /// call in that gap parks the wrong task.
+    ///
+    /// `mps2-an385-qemu-preempt` measured the exposure before this was set:
+    /// the window opened on 199 of 200 rounds, and the harmful sub-case --
+    /// blocking inside it -- happened once and was rescued by the call's own
+    /// timeout. Rare is not safe, and `PendSV` already calls
+    /// `Kernel::switch_context` itself, so the decision and the swap were
+    /// always meant to be one step.
+    const COMMITS_SWITCH: bool = true;
+
     fn yield_now(&self) {
         self.yields.fetch_add(1, Ordering::Relaxed);
         pend_switch();
@@ -393,8 +420,13 @@ impl Port for CortexMPort {
     }
 
     fn enter_critical(&self) {
+        // Read PRIMASK BEFORE masking, and keep it only for the outermost
+        // entry: that is the state `exit_critical` has to put back.
+        let was = primask();
         disable_interrupts();
-        self.nesting.fetch_add(1, Ordering::Relaxed);
+        if self.nesting.fetch_add(1, Ordering::Relaxed) == 0 {
+            self.saved_primask.store(was, Ordering::Relaxed);
+        }
     }
 
     fn exit_critical(&self) {
@@ -403,7 +435,26 @@ impl Port for CortexMPort {
         // ordering that matters is the `cpsie` below.
         let n = self.nesting.load(Ordering::Relaxed).saturating_sub(1);
         self.nesting.store(n, Ordering::Relaxed);
-        if n == 0 {
+        if n == 0 && self.saved_primask.load(Ordering::Relaxed) & 1 == 0 {
+            // RESTORE, do not enable. An unconditional `cpsie i` here is a
+            // defect, and a subtle one: a kernel call made from inside a
+            // caller's own masked region ends that region early, silently,
+            // in the middle of the caller.
+            //
+            // `mps2-an385-qemu-capi` paid for this one. `xTaskCreate` masks
+            // interrupts around "create the task" plus "give it a stack",
+            // because a task that is schedulable without a stack is one a
+            // `PendSV` can pick and run at `SP = 0`. The kernel's own
+            // `create_task` takes a critical section internally; its exit
+            // unmasked interrupts inside that supposedly-atomic pair, the
+            // pending `PendSV` fired between the two halves, and the new
+            // task was scheduled before it had anywhere to run. The demo
+            // faulted to `pc = 0` roughly 360 ticks later, in a DIFFERENT
+            // task, on a stack it did not own.
+            //
+            // `set_interrupt_mask_from_isr` / `clear_interrupt_mask_from_isr`
+            // a few lines below have always done it this way. The two pairs
+            // disagreeing was the tell.
             enable_interrupts();
         }
     }

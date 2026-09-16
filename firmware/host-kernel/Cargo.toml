@@ -1,0 +1,18 @@
+[package]
+name = "host-kernel"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rusty_rtos_port-host = { path = "../../crates/rusty_rtos_port-host" }
+# The scheduler itself. Siblings by git URL, as firmware/README.md says.
+rusty_rtos_kernel-core = { git = "https://github.com/Remade-With-Rust/rusty_rtos_kernel", default-features = false }
+rusty_rtos_core = { git = "https://github.com/Remade-With-Rust/rusty_rtos_core", default-features = false }
+
+[profile.release]
+opt-level = 2
+overflow-checks = true
+
+[workspace]
