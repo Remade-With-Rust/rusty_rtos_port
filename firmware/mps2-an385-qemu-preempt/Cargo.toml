@@ -24,7 +24,13 @@ rusty_rtos_port-cortex-m = { path = "../../crates/rusty_rtos_port-cortex-m" }
 # `rusty_rtos_port`. That is a real trade and it is the owner's to
 # revisit; a gate that cannot see the change it gates is worth less.
 rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
-rusty_rtos_core = { git = "https://github.com/Remade-With-Rust/rusty_rtos_core", default-features = false }
+# By PATH for the same reason, and it has to be: `kairos patches` writes
+# only `[patch.crates-io]`, so a git dependency here can never be
+# redirected to the local checkout -- while the kernel above, being a path
+# dependency, resolves ITS `rusty_rtos_core` through that patch. Two
+# sources for one crate is two crates, and the cell stops building the
+# moment core and kernel have to agree about anything.
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
 
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
