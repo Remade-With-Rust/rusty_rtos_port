@@ -185,7 +185,19 @@ impl Port for SimPort {
     }
 
     fn enter_critical(&self) {
-        self.nesting.set(self.nesting.get().saturating_add(1));
+        // `wrapping_add`, not `saturating_add`: this is the single
+        // most-executed write in the port, and saturating cost four
+        // instructions where one will do.
+        //
+        // The guard it replaces was never real. Saturating at `u32::MAX`
+        // would mean four billion critical sections entered and none left,
+        // and from there `nesting` could never reach zero again, so the sim
+        // would stop producing ticks for ever. The C's `uxCriticalNesting++`
+        // does not guard this either. The `saturating_sub` on the way out
+        // stays, because THAT one is load-bearing: `end_unwind` zeroes the
+        // nesting under an abandoned frame, and a stray exit after it has to
+        // stay at zero rather than wrap to the top.
+        self.nesting.set(self.nesting.get().wrapping_add(1));
     }
 
     fn exit_critical(&self) {
