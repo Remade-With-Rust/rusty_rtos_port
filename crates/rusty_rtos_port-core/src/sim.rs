@@ -29,6 +29,32 @@ use core::cell::Cell;
 use rusty_rtos_core::isr::Woken;
 use rusty_rtos_core::port::Port;
 
+/// The scheduler is running, so critical-section exits are counted.
+///
+/// The C patch counts exits only on a FreeRTOS thread — that is, only once
+/// tasks are running. Before that, task creation runs on the main thread and
+/// its critical sections are not counted.
+const COUNTING: u8 = 1 << 0;
+/// The kernel is inside its tick entry.
+///
+/// The C handler runs with signals blocked and does not recurse into the
+/// exit counter.
+const IN_ISR: u8 = 1 << 1;
+/// A switched-out frame's tail is running.
+///
+/// The sim has no stacks, so the outgoing task's call really does run to its
+/// end — the sections it had open and any section it opens after the switch.
+/// On a real port all of that sits on a frozen stack and happens when the
+/// task runs again, so while this is set the exits are tallied into
+/// [`SimPort::unwound`] instead of counted, and the kernel replays the tally
+/// when the task is switched back in.
+const UNWINDING: u8 = 1 << 2;
+
+/// Counting, on a task, with no abandoned tail: the exit is sim time.
+const COUNTS: u8 = COUNTING;
+/// The same, inside an abandoned tail: the exit is tallied, not counted.
+const TALLIES: u8 = COUNTING | UNWINDING;
+
 /// How many outermost critical-section exits deliver one tick (rule 3).
 ///
 /// The C oracle spells the same number in its `port.c` patch. Changing it is
@@ -56,22 +82,12 @@ pub struct SimPort {
     pending_tick: Cell<bool>,
     /// `xYieldPendings[0]` as the port sees it.
     yield_pending: Cell<bool>,
-    /// The C patch counts exits only on a FreeRTOS thread — that is, only
-    /// once tasks are running. Before that, task creation runs on the main
-    /// thread and its critical sections are not counted.
-    counting: Cell<bool>,
-    /// Whether the kernel is inside its tick entry (the C handler runs with
-    /// signals blocked and does not recurse into the exit counter).
-    in_isr: Cell<bool>,
-    /// Whether a switched-out frame's tail is running.
+    /// [`COUNTING`], [`IN_ISR`] and [`UNWINDING`], in one word.
     ///
-    /// The sim has no stacks, so the outgoing task's call really does run
-    /// to its end — the sections it had open and any section it opens after
-    /// the switch. On a real port all of that sits on a frozen stack and
-    /// happens when the task runs again, so while this is set the exits are
-    /// tallied into [`SimPort::unwound`] instead of counted, and the kernel
-    /// replays the tally when the task is switched back in.
-    unwinding: Cell<bool>,
+    /// They were three `Cell<bool>`s, and every outermost critical-section
+    /// exit read all three to decide a single three-way question. Together
+    /// they answer it in one load: see [`COUNTS`] and [`TALLIES`].
+    flags: Cell<u8>,
     /// Outermost exits the running tail has made so far.
     unwound: Cell<u32>,
 }
@@ -88,9 +104,7 @@ impl SimPort {
             ticks: Cell::new(0),
             pending_tick: Cell::new(false),
             yield_pending: Cell::new(false),
-            counting: Cell::new(false),
-            in_isr: Cell::new(false),
-            unwinding: Cell::new(false),
+            flags: Cell::new(0),
             unwound: Cell::new(0),
         }
     }
@@ -149,7 +163,13 @@ impl SimPort {
     /// Whether a switched-out frame's tail is running.
     #[must_use]
     pub fn is_unwinding(&self) -> bool {
-        self.unwinding.get()
+        self.flags.get() & UNWINDING != 0
+    }
+
+    /// Raise or drop one of [`COUNTING`], [`IN_ISR`], [`UNWINDING`].
+    fn set_flag(&self, bit: u8, yes: bool) {
+        let flags = self.flags.get();
+        self.flags.set(if yes { flags | bit } else { flags & !bit });
     }
 }
 
@@ -171,22 +191,25 @@ impl Port for SimPort {
     fn exit_critical(&self) {
         let nesting = self.nesting.get().saturating_sub(1);
         self.nesting.set(nesting);
+        if nesting != 0 {
+            return;
+        }
         // Rule 3, and the exact shape of the C patch: the count happens
         // after the nesting reaches zero and before interrupts are
         // re-enabled, on a task only, and the kernel's own tick entry does
-        // not recurse into it.
-        if nesting == 0 && self.counting.get() && !self.in_isr.get() {
+        // not recurse into it. One load answers all of that.
+        match self.flags.get() {
+            COUNTS => {
+                let exits = self.exits.get().wrapping_add(1);
+                self.exits.set(exits);
+                if exits.checked_rem(EXITS_PER_TICK) == Some(0) {
+                    self.pending_tick.set(true);
+                }
+            }
             // The tail of a call the scheduler abandoned: the C port's
             // thread has not run this yet, so it is not sim time yet.
-            if self.unwinding.get() {
-                self.unwound.set(self.unwound.get().saturating_add(1));
-                return;
-            }
-            let exits = self.exits.get().wrapping_add(1);
-            self.exits.set(exits);
-            if exits.checked_rem(EXITS_PER_TICK) == Some(0) {
-                self.pending_tick.set(true);
-            }
+            TALLIES => self.unwound.set(self.unwound.get().saturating_add(1)),
+            _ => {}
         }
     }
 
@@ -200,7 +223,7 @@ impl Port for SimPort {
     }
 
     fn in_isr(&self) -> bool {
-        self.in_isr.get()
+        self.flags.get() & IN_ISR != 0
     }
 
     fn idle(&self) {
@@ -228,20 +251,20 @@ impl Port for SimPort {
     }
 
     fn set_in_tick_entry(&self, yes: bool) {
-        self.in_isr.set(yes);
+        self.set_flag(IN_ISR, yes);
     }
 
     fn scheduler_started(&self) {
-        self.counting.set(true);
+        self.set_flag(COUNTING, true);
     }
 
     fn begin_unwind(&self) {
-        self.unwinding.set(true);
+        self.set_flag(UNWINDING, true);
         self.unwound.set(0);
     }
 
     fn end_unwind(&self) -> u32 {
-        self.unwinding.set(false);
+        self.set_flag(UNWINDING, false);
         // The frame is gone; whatever it still had open went with it.
         self.nesting.set(0);
         self.unwound.replace(0)
