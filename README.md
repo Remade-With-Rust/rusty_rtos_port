@@ -6,10 +6,9 @@
 [![docs.rs](https://docs.rs/rusty_rtos_port/badge.svg)](https://docs.rs/rusty_rtos_port)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-The **architecture seam** for Kairos: critical sections, the yield, the tick,
+The architecture seam for Kairos: critical sections, the yield, the tick,
 stack initialisation and the context switch. This is where the family keeps the
-`unsafe` it cannot avoid — a context switch is a stack swap — and it is fenced
-into the smallest surface that can do the job. MIT OR Apache-2.0.
+`unsafe` it cannot avoid, fenced into the smallest surface that can do the job.
 
 - **The deterministic sim port** carries the whole of sim contract v1 and is
   proven against the C Posix port by a trace diff at 100,000 ticks a scenario,
