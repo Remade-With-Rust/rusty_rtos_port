@@ -25,7 +25,12 @@ use rusty_rtos_core::port::Port;
 use rusty_rtos_port_core::sim::SimPort;
 
 /// Enough repetitions that process startup is noise in the total.
-const REPS: u32 = 1_000_000;
+///
+/// 200,000 rather than the million the first sizing used: once the loop
+/// stopped being deleted, each round went from 3 instructions to 161, so the
+/// same startup share now costs a fifth of the reps. Startup is ~290,000
+/// instructions, which is 0.9% of this.
+const REPS: u32 = 200_000;
 
 /// How deep the nesting goes. FreeRTOS's own nesting counter is what this
 /// exercises: only the outermost exit may restore interrupts.
@@ -46,6 +51,24 @@ fn main() {
     let mut isr_masks = 0u64;
 
     for round in 0..REPS {
+        // ★ WITHOUT THIS THE LOOP BODY DOES NOT EXIST.
+        //
+        // Every counter this workload moves lives in a `Cell` that is only
+        // READ after the loop. LLVM proves that, computes the final values in
+        // closed form, and deletes fifteen port calls a round. The census of
+        // the first version is the proof: exactly 1,000,000 instructions on
+        // each of three lines at 1,000,000 reps -- three per iteration, for
+        // fifteen calls.
+        //
+        // The work-parity anchors did NOT catch it. `exits` still read
+        // 7,000,000, because a closed-form update produces the right total.
+        // AN ANCHOR PROVES THE ANSWER, NOT THE WORK.
+        //
+        // `black_box` makes the port opaque to that reasoning: the compiler
+        // must assume something outside can observe it, so each call has to
+        // happen.
+        let port = core::hint::black_box(&port);
+
         // ---- nested critical sections -------------------------------------
         //
         // In, to `DEPTH`, and out again. Only the last exit is an outermost
