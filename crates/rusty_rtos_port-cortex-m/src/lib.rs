@@ -675,7 +675,12 @@ pub fn suppress_ticks_and_sleep(expected_idle_ticks: u64) -> u64 {
         // compiler is tracking.
         #[expect(unsafe_code, reason = "the tickless sleep")]
         unsafe {
-            core::arch::asm!("dsb", "wfi", "isb", options(nomem, nostack, preserves_flags));
+            core::arch::asm!(
+                "dsb",
+                "wfi",
+                "isb",
+                options(nomem, nostack, preserves_flags)
+            );
         }
     }
 

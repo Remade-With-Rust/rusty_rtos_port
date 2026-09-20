@@ -380,4 +380,118 @@ mod tests {
         assert!(!p.take_yield());
         assert_eq!(p.yields(), 1);
     }
+
+    /// `set_flag` RAISES a bit; it does not toggle it.
+    ///
+    /// `cargo mutants` replaced its `|` with `^` and nothing noticed,
+    /// because no test ever set a flag that was already set. The two differ
+    /// on exactly that input, and the scheduler-started flag is the one
+    /// where it would hurt: a second `scheduler_started()` under `^` would
+    /// turn exit COUNTING BACK OFF, and sim time would silently stop.
+    #[test]
+    fn setting_a_flag_that_is_already_set_leaves_it_set() {
+        let p = SimPort::default();
+        p.scheduler_started();
+        p.scheduler_started();
+
+        p.enter_critical();
+        p.exit_critical();
+        assert_eq!(
+            p.exits(),
+            1,
+            "COUNTING survived being set twice -- with a toggle it would be \
+             off again and every exit after it would go uncounted"
+        );
+
+        // The same for the unwinding flag, which `is_unwinding` reports.
+        p.begin_unwind();
+        assert!(p.is_unwinding());
+        p.begin_unwind();
+        assert!(p.is_unwinding(), "still unwinding after a second begin");
+    }
+
+    /// The counters answer what they have counted, and are not constants.
+    ///
+    /// These are the three columns every conformance trace ends with, and
+    /// the whole sim-time contract rests on them -- `exits` IS the clock.
+    /// All three were replaceable by a literal with nothing objecting.
+    #[test]
+    fn the_trace_counters_report_what_was_actually_counted() {
+        let p = SimPort::default();
+        assert_eq!(p.ticks(), 0, "nothing counted yet");
+        assert_eq!(p.yields(), 0);
+        assert_eq!(p.exits(), 0);
+
+        p.count_tick();
+        p.count_tick();
+        p.count_tick();
+        assert_eq!(p.ticks(), 3, "three, not zero and not one");
+
+        p.count_yield();
+        p.count_yield();
+        assert_eq!(p.yields(), 2, "two, not one");
+
+        p.scheduler_started();
+        for _ in 0..4_u32 {
+            p.enter_critical();
+            p.exit_critical();
+        }
+        assert_eq!(p.exits(), 4);
+    }
+
+    /// `yield_is_pending` OBSERVES and `take_yield` CONSUMES. A reader that
+    /// took the flag would make the kernel's own check destructive.
+    #[test]
+    fn a_pending_yield_can_be_observed_without_being_taken() {
+        let p = SimPort::default();
+        assert!(!p.yield_is_pending(), "nothing pending on a fresh port");
+
+        p.yield_now();
+        assert!(p.yield_is_pending(), "pending");
+        assert!(p.yield_is_pending(), "and asking twice did not consume it");
+
+        assert!(p.take_yield(), "the take reports it");
+        assert!(!p.yield_is_pending(), "and IS what consumed it");
+        assert!(!p.take_yield(), "so a second take has nothing");
+    }
+
+    /// `yield_from_isr` yields only when the woken flag says a higher
+    /// priority task is ready. Replacing its whole body with `()` -- never
+    /// yielding at all -- survived, because nothing called it.
+    #[test]
+    fn yield_from_isr_yields_only_when_something_was_woken() {
+        let p = SimPort::default();
+        p.yield_from_isr(Woken::NO);
+        assert!(
+            !p.yield_is_pending(),
+            "nothing was woken, so nothing is pending"
+        );
+
+        p.yield_from_isr(Woken::YES);
+        assert!(p.yield_is_pending(), "and something was, so it is");
+    }
+
+    /// `is_unwinding` reports the flag rather than a constant, and
+    /// `end_unwind` clears it.
+    #[test]
+    fn is_unwinding_follows_begin_and_end() {
+        let p = SimPort::default();
+        assert!(!p.is_unwinding(), "not unwinding to start with");
+        p.begin_unwind();
+        assert!(p.is_unwinding());
+        let _ = p.end_unwind();
+        assert!(!p.is_unwinding(), "and not, once the frame is done");
+    }
+
+    /// `in_isr` follows the tick-entry flag both ways, which is what keeps
+    /// the kernel's own tick from counting its exits as a task's.
+    #[test]
+    fn in_isr_follows_the_tick_entry_flag_both_ways() {
+        let p = SimPort::default();
+        assert!(!p.in_isr());
+        p.set_in_tick_entry(true);
+        assert!(p.in_isr());
+        p.set_in_tick_entry(false);
+        assert!(!p.in_isr(), "and back off again, not latched");
+    }
 }
