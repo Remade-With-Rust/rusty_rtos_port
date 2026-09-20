@@ -1,0 +1,25 @@
+# Instruction counts for the port seam: critical sections, yields and the
+# raised tick.
+#
+# The SIM port, because it is the one that runs on the host -- the silicon
+# ports are measured by their QEMU cells and by a board. A deterministic
+# counter, not a clock: the house rule is that the counter is the verdict and
+# the clock is confirmatory.
+[package]
+name = "port-ir"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rusty_rtos_port-core = { path = "../../crates/rusty_rtos_port-core", default-features = false }
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = true
+
+[workspace]
