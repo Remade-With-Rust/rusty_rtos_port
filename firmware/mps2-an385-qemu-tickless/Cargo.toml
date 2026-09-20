@@ -1,0 +1,45 @@
+[package]
+name = "mps2-an385-qemu-tickless"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[features]
+# THE ONLY DIFFERENCE BETWEEN THE TWO ARMS.
+#
+# It flips `Config::USE_TICKLESS_IDLE`, and nothing else in this cell reads
+# it. Both arms run the same tasks, the same delays and the same idle loop;
+# the kernel's `idle_suppress_ticks` returns immediately when the const is
+# false. So a digest that differs between the arms cannot be blamed on the
+# scenario.
+default = []
+tickless = []
+
+[dependencies]
+rusty_rtos_port-cortex-m = { path = "../../crates/rusty_rtos_port-cortex-m" }
+# BY PATH, not by git, for the reason `mps2-an385-qemu-preempt` gives at
+# length: a cell that gates kernel changes must build against the kernel
+# under test, and a git dependency resolves to the published one.
+rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
+# And core by path too: `kairos patches` writes only `[patch.crates-io]`,
+# which cannot redirect a git dependency -- while the kernel above, being a
+# path dependency, resolves ITS core through that patch. Two sources for one
+# crate is two crates, and the cell stops building the moment core and
+# kernel have to agree about anything. (Learned on the preempt cell: 60
+# errors, all of them "expected `Trace`, found `Trace`".)
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
+
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+cortex-m-semihosting = "0.5"
+panic-semihosting = "0.6"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+
+[workspace]

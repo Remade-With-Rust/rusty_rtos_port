@@ -61,6 +61,15 @@ const SYST_RVR: *mut u32 = 0xE000_E014 as *mut u32;
 const SYST_CVR: *mut u32 = 0xE000_E018 as *mut u32;
 /// Enable, tick interrupt, use the processor clock.
 const SYST_ENABLE: u32 = 0b111;
+/// `SysTick->CTRL.COUNTFLAG`: set if the counter reached zero since this
+/// register was last READ. Reading clears it, so it may only be read once
+/// per decision, and the value has to be kept in a local.
+const SYST_COUNTFLAG: u32 = 1 << 16;
+/// `SysTick->LOAD` is 24 bits wide, and so is the largest sleep one
+/// programming of it can buy.
+const SYST_MAX_RELOAD: u32 = 0x00FF_FFFF;
+/// `ICSR.PENDSTCLR`: drop a pending SysTick exception on the floor.
+const PENDSTCLR: u32 = 1 << 25;
 
 /// `SCB->SHPR3`, which holds the priorities of SysTick and PendSV.
 const SHPR3: *mut u32 = 0xE000_ED20 as *mut u32;
@@ -311,6 +320,26 @@ const fn ipsr() -> u32 {
 #[inline]
 fn write_reg(_addr: *mut u32, _value: u32) {}
 
+/// As [`write_reg`], and for the same reason the host build reads nothing.
+/// Every caller treats zero as "decline", so a host build declines.
+#[cfg(not(target_arch = "arm"))]
+#[inline]
+#[must_use]
+fn read_reg(_addr: *mut u32) -> u32 {
+    0
+}
+
+#[cfg(target_arch = "arm")]
+#[inline]
+#[must_use]
+fn read_reg(addr: *mut u32) -> u32 {
+    // SAFETY: as `write_reg` -- a fixed, always-mapped core peripheral.
+    #[expect(unsafe_code, reason = "core peripheral read")]
+    unsafe {
+        core::ptr::read_volatile(addr)
+    }
+}
+
 #[cfg(target_arch = "arm")]
 #[inline]
 fn write_reg(addr: *mut u32, value: u32) {
@@ -487,6 +516,13 @@ impl Port for CortexMPort {
         }
     }
 
+    /// `vPortSuppressTicksAndSleep`, delegated to [`suppress_ticks_and_sleep`]
+    /// so the register work sits beside the rest of the SysTick map rather
+    /// than in a trait impl.
+    fn suppress_ticks_and_sleep(&self, expected_idle_ticks: u64) -> u64 {
+        suppress_ticks_and_sleep(expected_idle_ticks)
+    }
+
     fn count_tick(&self) {
         self.note_tick();
     }
@@ -537,14 +573,150 @@ pub fn set_exception_priorities() {
 /// `configSETUP_TICK_INTERRUPT`. The caller works out the reload from its
 /// own clock; this crate does not guess a clock rate.
 pub fn start_tick(reload: u32) {
+    TICK_RELOAD.store(reload, Ordering::Relaxed);
     write_reg(SYST_RVR, reload);
     write_reg(SYST_CVR, 0);
     write_reg(SYST_CSR, SYST_ENABLE);
 }
 
+/// The reload [`start_tick`] was last given.
+///
+/// `vPortSuppressTicksAndSleep` needs to know how many processor cycles one
+/// tick is, and this crate deliberately does not guess a clock rate -- the
+/// caller works the reload out from its own. So rather than make a port ask
+/// for the number a second time (two places to get it wrong, and the C has
+/// exactly this bug class in `configSYSTICK_CLOCK_HZ`), the tick source
+/// records what it was set to and the sleep reads it back.
+///
+/// Zero means the tick was never started, and the sleep declines.
+static TICK_RELOAD: AtomicU32 = AtomicU32::new(0);
+
 /// Stop the tick.
 pub fn stop_tick() {
     write_reg(SYST_CSR, 0);
+}
+
+/// `vPortSuppressTicksAndSleep`: sleep through up to `expected_idle_ticks`
+/// of them and report how many actually passed.
+///
+/// The kernel has already established that nothing is runnable for that
+/// long and has suspended the scheduler; this reprograms SysTick for one
+/// long interval, waits, and hands back the number of WHOLE ticks the
+/// interval covered, which the kernel winds its own clock forward by.
+/// Zero declines, and every path that cannot account for the time exactly
+/// takes it.
+///
+/// # Two things this gets right, because getting them wrong loses a wake
+///
+/// **It sleeps to a tick BOUNDARY, not for a whole number of ticks.** The
+/// window is what is left of the tick we are standing in, plus `want - 1`
+/// whole ones. Waking on the boundary is what lets the counter be restarted
+/// at full reload with the tick phase unchanged; sleeping `want` whole ticks
+/// from here would shift every later tick by a fraction of one, for ever.
+///
+/// **It clears the pending SysTick before returning.** The caller holds
+/// PRIMASK, so the exception was never taken -- but it is pending, and the
+/// moment the mask drops it would be delivered and the kernel would count a
+/// tick it has just been told about. `PENDSTCLR` is the difference between
+/// suppressing ticks and deferring them.
+///
+/// # Callers
+///
+/// Must hold PRIMASK. `wfi` still wakes on a pending enabled interrupt with
+/// interrupts masked -- that is the C port's idiom, and it is what lets this
+/// function do the accounting rather than a handler.
+#[cfg(target_arch = "arm")]
+#[must_use]
+pub fn suppress_ticks_and_sleep(expected_idle_ticks: u64) -> u64 {
+    let reload = TICK_RELOAD.load(Ordering::Relaxed);
+    // The tick was never started, so there is no geometry to sleep by.
+    if reload == 0 || expected_idle_ticks == 0 {
+        return 0;
+    }
+    // `start_tick(reload)` fires every `reload + 1` cycles.
+    let per_tick = reload.saturating_add(1);
+    // One programming of a 24-bit LOAD buys this many whole ticks.
+    let ceiling = SYST_MAX_RELOAD.checked_div(per_tick).unwrap_or(0);
+    let want = expected_idle_ticks.min(u64::from(ceiling));
+    let want = u32::try_from(want).unwrap_or(0);
+    if want == 0 {
+        return 0;
+    }
+
+    // Stop the counter, capturing COUNTFLAG in the same breath: reading CSR
+    // CLEARS it, so this is the only chance to see whether the tick we are
+    // standing in has already expired.
+    let csr = read_reg(SYST_CSR);
+    write_reg(SYST_CSR, 0);
+    let left = read_reg(SYST_CVR) & SYST_MAX_RELOAD;
+
+    // A tick is already owed, or we are exactly on a boundary with nothing
+    // left to measure from. Sleeping through an owed tick would lose it, so
+    // decline and let the handler deliver it.
+    if csr & SYST_COUNTFLAG != 0 || left == 0 {
+        write_reg(SYST_RVR, reload);
+        write_reg(SYST_CVR, 0);
+        write_reg(SYST_CSR, SYST_ENABLE);
+        return 0;
+    }
+
+    // `want <= SYST_MAX_RELOAD / per_tick` and `left < per_tick`, so the sum
+    // fits in the LOAD register. The clamp is the register's width speaking,
+    // not an argument about the caller.
+    let whole = want.saturating_sub(1).saturating_mul(per_tick);
+    let total = left.saturating_add(whole).min(SYST_MAX_RELOAD);
+    write_reg(SYST_RVR, total.saturating_sub(1));
+    write_reg(SYST_CVR, 0);
+    write_reg(SYST_CSR, SYST_ENABLE);
+
+    {
+        // SAFETY: a barrier pair around a hint instruction. None of the three
+        // can fault, none touches memory, and none changes a register the
+        // compiler is tracking.
+        #[expect(unsafe_code, reason = "the tickless sleep")]
+        unsafe {
+            core::arch::asm!("dsb", "wfi", "isb", options(nomem, nostack, preserves_flags));
+        }
+    }
+
+    let woke = read_reg(SYST_CSR);
+    write_reg(SYST_CSR, 0);
+    let remaining = read_reg(SYST_CVR) & SYST_MAX_RELOAD;
+
+    let slept = if woke & SYST_COUNTFLAG != 0 {
+        // The window ran to its end, so we are on a tick boundary and
+        // exactly `want` ticks have passed.
+        u64::from(want)
+    } else {
+        // Something else woke us early. Count only the ticks that COMPLETED
+        // -- reporting a part-tick would wind the kernel's clock past a wake
+        // time. The phase shifts by whatever is left of the tick we are in,
+        // which is the price of an early wake.
+        let elapsed = total.saturating_sub(remaining);
+        match elapsed.checked_sub(left) {
+            None => 0,
+            Some(after) => u64::from(after.checked_div(per_tick).unwrap_or(0).saturating_add(1)),
+        }
+    };
+
+    // The suppressed ticks must not ALSO arrive as an exception the instant
+    // the caller drops PRIMASK; the kernel is about to be told about them.
+    write_reg(ICSR, PENDSTCLR);
+
+    write_reg(SYST_RVR, reload);
+    write_reg(SYST_CVR, 0);
+    write_reg(SYST_CSR, SYST_ENABLE);
+
+    slept
+}
+
+/// Off ARM there is no SysTick to reprogram and no `wfi` to wait on, so the
+/// only honest answer is to decline. See the ARM definition for the
+/// contract.
+#[cfg(not(target_arch = "arm"))]
+#[must_use]
+pub fn suppress_ticks_and_sleep(_expected_idle_ticks: u64) -> u64 {
+    0
 }
 
 /// What a `SysTick` handler should call: count the tick and, if the
