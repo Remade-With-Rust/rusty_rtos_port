@@ -99,15 +99,23 @@ trace byte-diff may never be quoted as proving the schedule held is unchanged
 
 ## What this cell does NOT claim
 
-* **Not an energy number.** See above.
+* **Not an energy number.** See above. And note the control arm **busy-spins**
+  — `idle_suppress_ticks` returns before ever reaching `Port::idle`, so this
+  arm never executes a `wfi`. That is fine for the quantity being measured,
+  because a `wfi`-ing idle task would be woken by every one of those 400 ticks
+  just the same. It would be badly wrong for a *current* comparison: against a
+  spinning baseline tickless flatters itself. The XIAO sibling
+  (`xiao-s3-tickless`) halts its control arm for exactly that reason, and that
+  is the cell to copy if you ever put a meter on this.
 * **Not a policy.** The sleep is `expected_idle_time` less nothing at all —
   the fixed policy FreeRTOS ships. Choosing a margin, or fitting one, is
   later work and no differential covers it.
-* **Not the ESP32-S3.** The Xtensa port has no tick-driven kernel cell at
-  all yet, and `esp-hal`'s `Rtc::sleep_light` reports nothing about how long
-  it lasted — its own docs note that a refused sleep, a rejected sleep and a
-  very short sleep are indistinguishable — so that port must measure elapsed
-  time itself. Different mechanism, same three numbers.
+* **Not the ESP32-S3.** That is `xiao-s3-tickless`, which now exists and has
+  run on a real XIAO: 400 alarm wakeups to 0 with the same digest in both
+  arms. Its sleep is a different mechanism for a reason — `waiti 0` unmasks
+  where `wfi` does not, so the suppression lives in the handler there and in
+  `PENDSTCLR` here — and it is worth reading for the defect it found that
+  this cell could not.
 * **Not `configPRE_SUPPRESS_TICKS_AND_SLEEP_PROCESSING`.** The kernel has no
   `Hooks` seam, so the application veto is unwired; a port declines by
   returning zero.

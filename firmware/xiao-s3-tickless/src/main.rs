@@ -112,7 +112,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use esp_backtrace as _;
-use esp_hal::time::Duration;
+use esp_hal::time::{Duration, Instant};
 use esp_hal::timer::Timer;
 use esp_hal::timer::systimer::{Alarm, SystemTimer};
 use esp_println::println;
@@ -316,6 +316,28 @@ static SLEEP_LAST_US: AtomicU32 = AtomicU32::new(0);
 /// is not a fault -- it is evidence the hazard above is real on this part.
 static DECLINED_SWITCHES: AtomicU32 = AtomicU32::new(0);
 
+/// Microseconds the core spent HALTED in `waiti`, summed over the run.
+///
+/// This is the energy proxy, and it is a much better one than the wakeup
+/// count: on a part whose idle current is dominated by whether the core is
+/// clocked, energy is proportional to the time NOT in here. Both arms halt
+/// -- see `task_idle` -- so the difference between them is the cost of the
+/// wakeups themselves, which is exactly what tickless removes.
+static ASLEEP_US: AtomicU32 = AtomicU32::new(0);
+/// When the scheduler was entered, so the run has a denominator.
+static RUN_START_US: AtomicU32 = AtomicU32::new(0);
+
+/// Microseconds since boot, from the free-running SYSTIMER.
+fn now_us() -> u64 {
+    Instant::now().duration_since_epoch().as_micros()
+}
+
+/// Add a halted interval to the ledger.
+fn note_slept(from_us: u64) {
+    let d = now_us().saturating_sub(from_us);
+    ASLEEP_US.fetch_add(d as u32, Ordering::Relaxed);
+}
+
 /// `XtensaPort` with `vPortSuppressTicksAndSleep` on top.
 ///
 /// The mechanism cannot live in `rusty_rtos_port-xtensa` the way the ARM one
@@ -441,6 +463,7 @@ impl Port for TicklessPort {
         // clock past a wake time, and the kernel clamps an overclaim rather
         // than trusting it -- but it cannot rescue one it was told was whole.
         SLEEP_LAST_US.store(elapsed as u32, Ordering::Relaxed);
+        ASLEEP_US.fetch_add(elapsed as u32, Ordering::Relaxed);
         let slept = elapsed.checked_div(TICK_MICROS).unwrap_or(0);
         let slept = slept.min(expected_idle_ticks);
         SLEEP_SLEPT.fetch_add(slept as u32, Ordering::Relaxed);
@@ -635,6 +658,27 @@ extern "C" fn task_work(_: usize) -> ! {
 extern "C" fn task_idle(_: usize) -> ! {
     loop {
         let _ = with_kernel(Kernel::idle_suppress_ticks);
+
+        if !TICKLESS {
+            // ★ THE FAIR BASELINE, and M3c exists because the first version
+            // of this cell did not have it.
+            //
+            // `idle_suppress_ticks` returns immediately when the const is
+            // false, so without this the control arm would SPIN -- and a
+            // spinning baseline makes tickless look far better than it is.
+            // FreeRTOS's idle task halts the core between ticks; so does
+            // this one. Both arms are now measured against the same thing a
+            // customer would actually ship.
+            //
+            // OUTSIDE `with_kernel`, and that is not a style choice: `waiti
+            // 0` sets PS.INTLEVEL to zero and leaves it there, so calling it
+            // inside a critical section destroys the section -- the defect
+            // this cell's header describes. Out here the level is already
+            // zero and there is nothing to destroy.
+            let before = now_us();
+            PORT.idle();
+            note_slept(before);
+        }
     }
 }
 
@@ -658,6 +702,19 @@ fn finish() -> ! {
         (d.order, d.timed, d.events, d.switches)
     })
     .unwrap_or((0, 0, 0, 0));
+    // FIRST, before a byte is printed: semihosting over JTAG serial is slow
+    // enough to swamp the number being measured.
+    let end_us = now_us();
+    let start_us = u64::from(RUN_START_US.load(Ordering::SeqCst));
+    let total_us = end_us.saturating_sub(start_us);
+    let asleep_us = u64::from(ASLEEP_US.load(Ordering::SeqCst));
+    let active_us = total_us.saturating_sub(asleep_us);
+    // Per mille, so a sub-percent duty cycle is still a number.
+    let duty = active_us
+        .saturating_mul(1000)
+        .checked_div(total_us.max(1))
+        .unwrap_or(0);
+
     let wakeups = u64::from(WAKEUPS.load(Ordering::SeqCst));
     let laps = LAPS.load(Ordering::SeqCst);
 
@@ -679,6 +736,8 @@ fn finish() -> ! {
         "switches declined     {}   (landed inside a suppressed sleep)",
         DECLINED_SWITCHES.load(Ordering::SeqCst)
     );
+    println!("run                   {total_us}us   halted {asleep_us}us   ACTIVE {active_us}us");
+    println!("core duty cycle       {}.{}%   (active/total -- the energy proxy)", duty / 10, duty % 10);
     println!("SCHEDULE DIGEST       {order:016x}   (order: who ran, in what order)");
     println!("  ...with tick stamps {timed:016x}   (diagnostic -- see the header)");
 
@@ -864,6 +923,7 @@ fn main() -> ! {
 
     println!("worker delays {DELAY_TICKS} ticks a lap, {ROUNDS} laps -- idle almost all of it");
     println!("entering the scheduler...");
+    RUN_START_US.store(now_us() as u32, Ordering::SeqCst);
 
     // Into the scheduler. `main`'s own context is saved by the very same
     // handler, into slot `MAIN`, which is why `CONTEXTS` is one more than

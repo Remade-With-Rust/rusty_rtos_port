@@ -54,6 +54,68 @@ pinned. The sleep diagnostics read 20 sleeps, 400 ticks asked and 400 slept,
 the last window measuring 20,014 us against a 20,000 us request — the
 elapsed time is genuinely read off the counter, not assumed.
 
+## ★★ M3c: with a FAIR baseline, tickless LOSES on this part
+
+The table above counts wakeups. Wakeups are not energy, and the honest
+measurement needed two things the first version did not have: a control arm
+that **halts the core** the way FreeRTOS's idle task does, and a measure of
+how long the core was actually running.
+
+Both arms now halt in `waiti` and accumulate time-halted off the free-running
+SYSTIMER. The result inverts the headline:
+
+| | control (`waiti` per tick) | tickless |
+|---|---:|---:|
+| wall | 399,666 us | 403,960 us |
+| halted | 397,010 us | 400,322 us |
+| **core active** | **2,656 us** | **3,638 us** |
+| **duty cycle** | **0.6 %** | **0.9 %** |
+| alarm wakeups | 400 | 0 |
+
+**Tickless spent 37 % MORE time with the core running.** Four hundred wakeups
+became zero and the part worked *harder*.
+
+### Why, and it is arithmetic rather than a defect
+
+A `waiti` control is **already 99.4 % halted.** That number is the ceiling for
+any idle optimisation whatsoever on this workload: even a tickless
+implementation that cost literally nothing could remove at most 2,656 us of a
+399,666 us run. There is no prize here to win.
+
+And this one is not free. Each sleep replaces ~20 tick interrupts at ~6.6 us
+apiece (~133 us) with one suspend / reprogram / sleep / measure / restore /
+resume cycle costing ~182 us — a net **+49 us per sleep**, twenty times over.
+
+The deeper reason is that **`waiti` is a shallow halt**: it stops the core
+clock and leaves everything else powered, so re-entering it costs one
+interrupt entry — and on Xtensa that is a register-window spill, not a cheap
+one, but still only microseconds. Tickless pays for itself when a wakeup is
+*expensive*. It is not, here.
+
+### The verdict, which prunes a milestone
+
+> **Tickless idle is a lever on sleep DEPTH, not on sleep COUNT. Removing
+> wakeups is worth nothing until a wakeup is worth something.**
+
+So the next brick is `Rtc::sleep_light` — which gates clocks and drops power
+domains, making a wake cost hundreds of microseconds and real charge, at
+which point 400 to 0 becomes the whole game. The mechanism here is built to
+survive that swap: elapsed time is read off the counter rather than trusted,
+which is exactly what a sleep that reports nothing requires.
+
+**A fitted sleep-length policy is pruned.** Tuning *when* to sleep cannot
+help when the sleep is the wrong *depth*, and no policy beats a 0.6 % ceiling.
+
+### Predicted in advance, and wrong
+
+Before the run the prediction on record was that the difference would be
+"small". It was neither small nor in the predicted direction, which is the
+more useful outcome: a confirmed guess teaches nothing, and this one produced
+the ceiling argument that closed out the mission.
+
+The control arm's active time is **bit-identical across repeat runs**
+(2,656 us, twice), so this is a deterministic instrument and not a noisy one.
+
 ## ★ The bug the board found, which building never would have
 
 The first run of the tickless arm **failed**, and that failure is the whole
