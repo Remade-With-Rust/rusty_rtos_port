@@ -51,9 +51,14 @@ use std::time::{Duration, Instant};
 /// Set this to run the cells. See the module note.
 const GATE: &str = "KAIROS_QEMU_CELLS";
 
-/// Long enough for a cold build plus a full cell, short enough that a
-/// hung port does not stall a mutation run.
-const DEADLINE: Duration = Duration::from_secs(90);
+/// The deadline covers the QEMU RUN only -- the build happens before it,
+/// undeadlined -- and a healthy cell boots and finishes in three to four
+/// seconds. Twenty is generous for that and four and a half times cheaper
+/// than ninety when a mutant HANGS, which is the common case here: a port
+/// that stops switching never reaches the semihosting exit, so nearly
+/// every caught mutant is caught by this timeout rather than by a failed
+/// assertion.
+const DEADLINE: Duration = Duration::from_secs(20);
 
 fn enabled() -> bool {
     std::env::var_os(GATE).is_some()
