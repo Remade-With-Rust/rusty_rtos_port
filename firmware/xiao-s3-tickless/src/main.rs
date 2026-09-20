@@ -327,6 +327,29 @@ static ASLEEP_US: AtomicU32 = AtomicU32::new(0);
 /// When the scheduler was entered, so the run has a denominator.
 static RUN_START_US: AtomicU32 = AtomicU32::new(0);
 
+/// **The tick grid.** Absolute microsecond time of the next tick to deliver.
+///
+/// The tick is driven as a ONE-SHOT to an absolute instant, re-armed every
+/// tick, rather than as a free-running periodic timer -- and that is what
+/// makes tickless keep time.
+///
+/// The first version restarted a 1 ms period at the moment the sleep woke.
+/// Every sleep therefore threw away however much of a period had already
+/// elapsed while the worker ran, and the loss compounded: measured, the
+/// tickless arm clock ran **0.99 % slow**, which is 38.7 seconds in an hour.
+/// Its logical tick count was a perfect 400, so nothing in the gate saw it --
+/// the drift is in the mapping from logical ticks to real time, and that
+/// mapping was not being measured.
+///
+/// With an absolute grid there is nothing to lose: each tick is armed at
+/// `NEXT_TICK_US`, computed from the grid rather than from now, so an error
+/// in one arming cannot accumulate into the next. Work that overruns a
+/// period makes ticks catch up, which is correct, instead of pushing the grid
+/// later, which is not.
+///
+/// `u32` of microseconds wraps at ~71 minutes. This cell runs for 400 ms.
+static NEXT_TICK_US: AtomicU32 = AtomicU32::new(0);
+
 /// Microseconds since boot, from the free-running SYSTIMER.
 fn now_us() -> u64 {
     Instant::now().duration_since_epoch().as_micros()
@@ -415,16 +438,29 @@ impl Port for TicklessPort {
             return 0;
         };
 
-        let window = expected_idle_ticks.saturating_mul(TICK_MICROS);
-        let before = alarm.now();
+        // Sleep to a point ON THE GRID -- the `expected`th tick from here --
+        // rather than for `expected` periods starting now. This is the Xtensa
+        // spelling of what the ARM port does by sleeping to a tick BOUNDARY,
+        // and leaving it out is what made the clock run slow.
+        let grid = u64::from(NEXT_TICK_US.load(Ordering::Relaxed));
+        let boundary = grid.saturating_add(
+            expected_idle_ticks
+                .saturating_sub(1)
+                .saturating_mul(TICK_MICROS),
+        );
+        let before = now_us();
+        let Some(window) = boundary.checked_sub(before).filter(|w| *w > 0) else {
+            // The boundary is already behind us: the kernel owes a tick, and
+            // sleeping through it would lose the wake.
+            return 0;
+        };
 
         alarm.stop();
         alarm.enable_auto_reload(false);
         if alarm.load_value(Duration::from_micros(window)).is_err() {
-            // The window did not fit the timer. Put the tick back exactly as
-            // it was and decline rather than sleep for a length nobody
-            // chose.
-            restore_tick(alarm);
+            // The window did not fit the timer. Put the tick back on the grid
+            // and decline rather than sleep for a length nobody chose.
+            arm_next_tick(alarm);
             return 0;
         }
         alarm.clear_interrupt();
@@ -452,32 +488,53 @@ impl Port for TicklessPort {
 
         alarm.stop();
         // MEASURED, not assumed. The counter is free-running and is the only
-        // thing here that knows how long the sleep really was -- whether it
-        // ran to its end, was cut short by another interrupt, or never
-        // happened.
-        let elapsed = alarm.now().duration_since_epoch().as_micros()
-            - before.duration_since_epoch().as_micros();
-        restore_tick(alarm);
+        // thing that knows how long the sleep really was -- whether it ran to
+        // its end, was cut short by another interrupt, or never happened.
+        let after = now_us();
+        let elapsed = after.saturating_sub(before);
 
-        // Whole ticks only. Reporting a part-tick would wind the kernel's
-        // clock past a wake time, and the kernel clamps an overclaim rather
-        // than trusting it -- but it cannot rescue one it was told was whole.
+        // How many GRID POINTS went by, which is a different question from
+        // how long we slept. Dividing elapsed by the period would put the
+        // drift straight back: it measures from the wake, not from the grid.
+        let slept = if after < grid {
+            0
+        } else {
+            after
+                .saturating_sub(grid)
+                .checked_div(TICK_MICROS)
+                .unwrap_or(0)
+                .saturating_add(1)
+        };
+        let slept = slept.min(expected_idle_ticks);
+
+        // Advance the grid by exactly the ticks being reported, so the
+        // kernel clock and the timer agree about where the next one is.
+        NEXT_TICK_US.store(
+            grid.saturating_add(slept.saturating_mul(TICK_MICROS)) as u32,
+            Ordering::Relaxed,
+        );
+        arm_next_tick(alarm);
+
         SLEEP_LAST_US.store(elapsed as u32, Ordering::Relaxed);
         ASLEEP_US.fetch_add(elapsed as u32, Ordering::Relaxed);
-        let slept = elapsed.checked_div(TICK_MICROS).unwrap_or(0);
-        let slept = slept.min(expected_idle_ticks);
         SLEEP_SLEPT.fetch_add(slept as u32, Ordering::Relaxed);
         slept
     }
 }
 
-/// Put alarm 0 back to the periodic millisecond tick.
-fn restore_tick(alarm: &mut Alarm<'static>) {
+/// Arm alarm 0 for the next point on the tick grid.
+///
+/// The delay is `NEXT_TICK_US - now`, so the target is the GRID instant and
+/// not "one period after whenever this happened to run". Latency in getting
+/// here shortens this one interval; it does not move the grid.
+fn arm_next_tick(alarm: &mut Alarm<'static>) {
+    let next = u64::from(NEXT_TICK_US.load(Ordering::Relaxed));
+    // Never zero: a target already in the past must still fire, so the kernel
+    // catches up rather than stalling.
+    let delay = next.saturating_sub(now_us()).max(1);
     alarm.stop();
     alarm.clear_interrupt();
-    alarm.reset();
-    alarm.enable_auto_reload(true);
-    let _ = alarm.load_value(Duration::from_micros(TICK_MICROS));
+    let _ = alarm.load_value(Duration::from_micros(delay));
     alarm.start();
 }
 
@@ -610,10 +667,14 @@ fn tick_interrupt() {
     }
 
     WAKEUPS.fetch_add(1, Ordering::Relaxed);
+    // Advance the grid one tick and arm the next FROM it. Doing this before
+    // the kernel call keeps the interval honest: the next target is the grid
+    // instant, not one period after this handler happened to finish.
+    NEXT_TICK_US.fetch_add(TICK_MICROS as u32, Ordering::Relaxed);
     // SAFETY: as above; no critical section can be open while this runs.
     let slot = unsafe { &mut *ALARM.0.get() };
     if let Some(alarm) = slot.as_mut() {
-        alarm.clear_interrupt();
+        arm_next_tick(alarm);
     }
 
     let want = with_kernel_in_isr(Kernel::increment_tick).unwrap_or(false);
@@ -768,6 +829,41 @@ fn finish() -> ! {
         "the clock landed in the band the scenario's arithmetic fixes -- nothing overslept",
     );
 
+    // ★ THE CLOCK CLAIM, and the gate had no equivalent until a reader asked
+    // why the tickless arm took LONGER.
+    //
+    // Every check above counts LOGICAL ticks, and both arms produce exactly
+    // 400 of them however badly the timer is driven. What none of them could
+    // see is the mapping from logical ticks to real time: the first version
+    // of this cell ran 0.99 % slow -- 38.7 seconds in an hour -- with a
+    // flawless tick count and a matching digest.
+    //
+    // So bound the wall time a logical tick is worth. Tenths of a percent,
+    // because the defect this exists to catch was ten of them.
+    // Divided by the ticks the kernel ACTUALLY counted, not by the ticks the
+    // scenario asked for. They are pinned to within a few of each other by
+    // the band check above, but dividing by the nominal would turn a legal
+    // four-tick overshoot into a fictitious 1 % of drift.
+    let per_tick_ns = total_us
+        .saturating_mul(1000)
+        .checked_div(ticks.max(1))
+        .unwrap_or(0);
+    let nominal_ns = TICK_MICROS.saturating_mul(1000);
+    let drift_permille = per_tick_ns
+        .abs_diff(nominal_ns)
+        .saturating_mul(1000)
+        .checked_div(nominal_ns)
+        .unwrap_or(9999);
+    println!(
+        "clock                 {per_tick_ns}ns per logical tick vs {nominal_ns}ns nominal   drift {}.{}%",
+        drift_permille / 10,
+        drift_permille % 10
+    );
+    check(
+        drift_permille <= 3,
+        "the kernel clock kept real time -- a logical tick is worth a real one",
+    );
+
     if TICKLESS {
         // THE CLAIM, and it is unfakeable: a logical tick that cost no
         // wakeup can only have come from `step_tick` winding the clock over
@@ -902,7 +998,11 @@ fn main() -> ! {
     // handle onto a peripheral rather than a value.
     let alarm = systimer.alarm0;
     alarm.set_interrupt_handler(tick_interrupt);
-    alarm.enable_auto_reload(true);
+    // TARGET mode, not Period: every tick is a one-shot to the next point on
+    // an absolute grid. See `NEXT_TICK_US` for why a free-running period
+    // cannot survive tickless.
+    alarm.enable_auto_reload(false);
+    NEXT_TICK_US.store((now_us() + TICK_MICROS) as u32, Ordering::Relaxed);
     if alarm.load_value(Duration::from_micros(TICK_MICROS)).is_err() {
         println!("the timer refused a {TICK_MICROS}us tick");
         loop {

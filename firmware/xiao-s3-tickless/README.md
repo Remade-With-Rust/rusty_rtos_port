@@ -66,13 +66,13 @@ SYSTIMER. The result inverts the headline:
 
 | | control (`waiti` per tick) | tickless |
 |---|---:|---:|
-| wall | 399,666 us | 403,960 us |
-| halted | 397,010 us | 400,322 us |
-| **core active** | **2,656 us** | **3,638 us** |
+| wall | 399,595 us | 399,611 us |
+| **core active** | **2,506 us** | **3,722 us** |
 | **duty cycle** | **0.6 %** | **0.9 %** |
 | alarm wakeups | 400 | 0 |
+| clock drift | 0.1 % | 0.0 % |
 
-**Tickless spent 37 % MORE time with the core running.** Four hundred wakeups
+**Tickless spent ~48 % MORE time with the core running.** Four hundred wakeups
 became zero and the part worked *harder*.
 
 ### Why, and it is arithmetic rather than a defect
@@ -113,9 +113,71 @@ Before the run the prediction on record was that the difference would be
 more useful outcome: a confirmed guess teaches nothing, and this one produced
 the ceiling argument that closed out the mission.
 
-Three repeat runs each way — control 2,656 / 2,656 / 2,656 us, tickless
-3,638 / 3,638 / 3,639 us — so this is a deterministic instrument, not a noisy
-one, and the difference is 370x the spread.
+The instrument is deterministic: repeat runs reproduce to within a couple of
+microseconds, so the difference is orders of magnitude larger than the spread.
+
+(An earlier version of this table read 2,656 and 3,638 us with the tickless
+arm's wall at 403,960 us. That extra 4,294 us was a **clock-drift defect**,
+not a cost — see the next section. The conclusion is unchanged and slightly
+stronger without it.)
+
+## ★★★ The second bug, found by a question rather than a test
+
+The table above originally showed the tickless arm taking **4,294 us longer
+in wall time** for the same 400 logical ticks. That was reported as incidental.
+A reader asked the obvious question — *if it took longer, isn't that a bad
+thing?* — and it was:
+
+| | us per logical tick | drift |
+|---|---:|---:|
+| control | 999.2 | -0.08 % |
+| **tickless, before** | **1009.9** | **+0.99 %** |
+
+**The tickless kernel was losing real time.** An hour of it would run **38.7
+seconds slow**. Delays, timeouts and software timers all stretch by 1 %.
+
+### The cause
+
+The tick was a free-running 1 ms period, and the sleep **restarted that period
+at the instant it woke**. So every sleep discarded however much of a period had
+already elapsed while the worker ran — ~180 us a lap — and the loss compounded.
+91 % of the 4,294 us gap is exactly the measured active time. A standalone
+simulation of the old logic predicts +0.965 % against +0.99 % measured.
+
+### The fix: an absolute grid, not a period
+
+`NEXT_TICK_US` holds the absolute microsecond instant of the next tick. Every
+tick is a **one-shot armed at `grid - now`**, so latency in arming shortens
+that one interval instead of moving the grid, and a sleep targets a **grid
+point** rather than a duration. Errors cannot accumulate because every arming
+is computed from the grid rather than from the last one.
+
+Measured after: wall 399,611 us against the control's 399,595 us — a
+**16 us** gap where there had been 4,294 — and 0.0 % drift.
+
+### Why no test caught it, which is the part worth keeping
+
+Every check in this cell counted **logical** ticks, and both arms produce
+exactly 400 of those *however badly the timer is driven*. The schedule digest
+matched too, because the order of events was never wrong. The defect lived in
+the mapping from logical ticks to real time, and nothing measured that mapping.
+
+> **A gate that only compares the system to itself cannot catch the system's
+> shared reference drifting.** Both arms agreed with each other and both were
+> wrong about the wall clock. The cure is an *external* reference — here the
+> free-running counter — and a check that the two agree.
+
+There is now one: wall-time-per-logical-tick must be within 0.3 % of nominal.
+It is the only check in this cell that compares the kernel to something
+outside itself.
+
+### And it was a known hazard, written down on the other port
+
+The ARM cell's README says, in as many words, that sleeping for N whole
+periods from here "would shift every later tick by a fraction of one, for
+ever". Boundary-sleeping was implemented there deliberately — and then not
+carried across to Xtensa. Knowing a hazard clearly is no defence against
+walking into it in the second implementation.
 
 ## ★ The bug the board found, which building never would have
 
