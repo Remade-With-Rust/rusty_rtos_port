@@ -44,6 +44,8 @@ carries a test that fails when the mechanism is removed.
 |---|---|---|
 | sim | 8,408,764 trace lines identical to the C Posix port across nine scenarios | a tick delivered one exit early moves every later line |
 | Cortex-M | `PendSV` switch on QEMU `mps2-an385`; preemption cell | — |
+| Cortex-M tickless | **401 SysTick interrupts -> 0** with the schedule digest unmoved | ✅ removing the pended-last-tick line fails the tick band |
+| Xtensa tickless | **400 alarm interrupts -> 0 on a real XIAO S3**, digest unmoved | ✅ the clock gate catches a drifting tick the digest cannot |
 | RISC-V | 201 switches between two tasks that never yield, zero faults | — |
 | Xtensa | 100/99 resumptions from three frames deep on a XIAO S3, zero faults | ✅ |
 | host | a task that NEVER yields is still taken off the CPU: 40 of 40 expected laps | ✅ **1 of 120** with `KAIROS_HOST_NO_PREEMPT=1` |
@@ -118,14 +120,38 @@ makes it readable.
 bench/switch-cost/run.sh     # from the Kairos umbrella
 ```
 
+## Tickless idle, and why the two ports do it differently
+
+Both implement `Port::suppress_ticks_and_sleep`; the mechanisms are not
+interchangeable, and the difference is architectural rather than stylistic.
+
+| | Cortex-M | Xtensa |
+|---|---|---|
+| the sleep | `wfi` — **leaves PRIMASK alone**, so the tick is left *pending* and never taken | `waiti 0` — **sets `PS.INTLEVEL` to zero and leaves it there**, so the tick really is taken, and the caller's critical section is gone from the wake onward |
+| suppressing the tick | clear the pending exception (`ICSR.PENDSTCLR`) | a flag read at the top of the handler, plus re-raising the mask the instant `waiti` returns |
+| where the code lives | in this crate, beside the SysTick register map — SysTick is a **core** peripheral | in the firmware cell — `SYSTIMER` is a **chip** peripheral belonging to `esp-hal`, and this crate is HAL-free |
+
+**Two laws both ports obey, each paid for.**
+
+* **Sleep to a tick boundary, or drive the tick from an absolute grid — never
+  restart a period on waking.** Restarting discards whatever fraction of a
+  period had elapsed while the application ran, every sleep, and it compounds:
+  measured at **0.99 % slow, 38.7 seconds in an hour**, with a flawless logical
+  tick count.
+* **Measure the sleep; do not trust it.** `esp-hal`'s own documentation warns
+  that a refused, a rejected and a very short `Rtc::sleep_light` are
+  indistinguishable from its return. Both ports read elapsed time off a
+  free-running counter, which is also what lets the sleep underneath be
+  swapped for a deeper one without re-proving anything.
+
 ## Backends
 
 | crate | target | status |
 |---|---|---|
 | `rusty_rtos_port-core` | any | the trait and the sim port, zero `unsafe` |
-| `rusty_rtos_port-cortex-m` | `thumbv7m-none-eabi`+ | QEMU-proven, corpus 18/18 |
+| `rusty_rtos_port-cortex-m` | `thumbv7m-none-eabi`+ | QEMU-proven, corpus 18/18; **tickless** |
 | `rusty_rtos_port-riscv` | `riscv32imac-unknown-none-elf` | QEMU-proven, preemptive path fixed and measured |
-| `rusty_rtos_port-xtensa` | `xtensa-esp32s3-none-elf` | **on silicon**, XIAO ESP32-S3 |
+| `rusty_rtos_port-xtensa` | `xtensa-esp32s3-none-elf` | **on silicon**, XIAO ESP32-S3; kernel on a tick, **tickless** |
 | `rusty_rtos_port-host` | x86-64 Windows + Linux | OS threads, one run permit; `SuspendThread` / `SIGUSR1` |
 
 ## Layout

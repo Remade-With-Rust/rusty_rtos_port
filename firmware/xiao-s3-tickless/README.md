@@ -79,8 +79,8 @@ became zero and the part worked *harder*.
 
 A `waiti` control is **already 99.4 % halted.** That number is the ceiling for
 any idle optimisation whatsoever on this workload: even a tickless
-implementation that cost literally nothing could remove at most 2,656 us of a
-399,666 us run. There is no prize here to win.
+implementation that cost literally nothing could remove at most 2,506 us of a
+399,595 us run. There is no prize here to win.
 
 And this one is not free. Each sleep replaces ~20 tick interrupts at ~6.6 us
 apiece (~133 us) with one suspend / reprogram / sleep / measure / restore /

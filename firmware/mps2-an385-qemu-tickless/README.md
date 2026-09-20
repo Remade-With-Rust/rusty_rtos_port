@@ -97,6 +97,38 @@ second gate for a second kind of evidence, and the standing rule that a raw
 trace byte-diff may never be quoted as proving the schedule held is unchanged
 — it is now merely the weaker of two reasons.
 
+## What the Xtensa sibling proved about this cell's design
+
+Two of this cell's decisions looked like fussiness until `xiao-s3-tickless`
+was written without them, and each cost a real defect there:
+
+* **Sleeping to a tick BOUNDARY rather than for N whole periods.** The section
+  below says, in as many words, that the alternative "would shift every later
+  tick by a fraction of one, for ever". It was not carried across. The Xtensa
+  cell restarted its period at the wake and ran **0.99 % slow — 38.7 seconds in
+  an hour** — with a flawless logical tick count and a matching digest. It now
+  drives its tick from an absolute grid, which is the same idea by other means.
+* **Clearing the pending tick rather than letting the handler run.** On Xtensa
+  the equivalent is impossible — `waiti 0` unmasks — so the suppression has to
+  move into the handler, and getting that wrong stopped the scheduler dead.
+
+> **Knowing a hazard clearly, in prose, in your own repository, is no defence
+> against walking into it in the second implementation.** Only a gate is.
+
+And the gate lesson that followed, which applies to this cell too: every check
+here counts **logical** ticks and compares the two arms to each other. Both
+arms produce 400 ticks however badly the timer is driven, and a digest that
+matches says nothing about the clock. The Xtensa cell now bounds
+wall-time-per-logical-tick against a free-running counter — the only check in
+it that compares the kernel to something outside itself.
+
+> **A gate that only compares the system to itself cannot catch the system's
+> shared reference drifting.**
+
+This cell has no equivalent check because QEMU's wall clock is not physical, so
+there is nothing outside it to compare against. That is a limit of the
+emulator, and it is stated here rather than left to be assumed.
+
 ## What this cell does NOT claim
 
 * **Not an energy number.** See above. And note the control arm **busy-spins**

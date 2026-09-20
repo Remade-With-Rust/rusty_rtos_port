@@ -25,6 +25,28 @@ meant to be read together.
 | ESP32-C6 / P4 | `esp-hal` + `rusty_rtos_port-riscv` | `riscv32imac-unknown-none-elf` / `riscv32imafc-unknown-none-elf` |
 | ESP32 / ESP32-S3 | `esp-hal` (esp toolchain) + `rusty_rtos_port-xtensa` | `xtensa-esp32-none-elf` / `xtensa-esp32s3-none-elf` |
 
+## The cells, and the one claim each makes
+
+A cell proves exactly one thing and says what it does **not** claim. Each
+gates itself and exits non-zero on failure, so `cargo run --release` is the
+whole kill test.
+
+| cell | claim |
+|---|---|
+| `mps2-an385-qemu-switch` | `PendSV` saves and restores a context correctly |
+| `mps2-an385-qemu-kernel` | the Kernel chooses, driven by a tick |
+| `mps2-an385-qemu-preempt` | a blocking call made in the window a `give` opens parks the right task — 200/200, window closed |
+| `mps2-an385-qemu-tickless` | **401 SysTick interrupts -> 0, schedule unmoved** |
+| `riscv32-qemu-switch` · `riscv32-qemu-preempt` | the same two on RV32; 201 switches, zero faults |
+| `xiao-s3-switch` | an Xtensa LX7 switch **on silicon**, 64 witness words a task |
+| `xiao-s3-radio` | the joint `esp-radio-rtos-driver` blocks on |
+| `xiao-s3-tickless` | **the Kernel on a tick on Xtensa**, and **400 alarm interrupts -> 0** on a real XIAO |
+| `host-kernel` | the scheduling cell moved off the chip, on OS threads |
+
+The two tickless cells are worth reading together: they reach the same result
+by **opposite mechanisms**, because `wfi` leaves the interrupt mask alone and
+`waiti 0` does not. Each README says why its own shape is forced.
+
 Rules:
 
 - Depend on this repo's crates by **path** (`../../crates/rusty_rtos_port`) inside a
