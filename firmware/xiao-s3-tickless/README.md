@@ -113,8 +113,9 @@ Before the run the prediction on record was that the difference would be
 more useful outcome: a confirmed guess teaches nothing, and this one produced
 the ceiling argument that closed out the mission.
 
-The control arm's active time is **bit-identical across repeat runs**
-(2,656 us, twice), so this is a deterministic instrument and not a noisy one.
+Three repeat runs each way — control 2,656 / 2,656 / 2,656 us, tickless
+3,638 / 3,638 / 3,639 us — so this is a deterministic instrument, not a noisy
+one, and the difference is 370x the spread.
 
 ## ★ The bug the board found, which building never would have
 
