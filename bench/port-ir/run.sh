@@ -19,7 +19,12 @@ cargo build --release
 [ -f "$bin" ] || { echo "no binary at $bin" >&2; exit 1; }
 
 # Every source that can change the count must be OLDER than the binary.
-newest=$(find ../../crates/rusty_rtos_port-core/src src -name '*.rs' -newer "$bin" -print -quit)
+#
+# The sibling repo is in the list on purpose: this bench takes
+# `rusty_rtos_core` by PATH across the umbrella, so an edit there changes this
+# count and a check that watched only this repo would call a stale binary
+# fresh. The other three instruments have no such dependency.
+newest=$(find ../../crates/rusty_rtos_port-core/src               ../../../rusty_rtos_core/crates/rusty_rtos_core/src               src -name '*.rs' -newer "$bin" -print -quit)
 if [ -n "$newest" ]; then
     echo "STALE: $newest is newer than $bin -- the build did not take" >&2
     exit 1
