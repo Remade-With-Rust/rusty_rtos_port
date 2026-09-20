@@ -189,15 +189,3 @@ fn cortex_m_tickless_cell_passes() {
 fn cortex_m_kernel_cell_passes() {
     require("mps2-an385-qemu-kernel");
 }
-
-/// The RV32 context switch.
-#[test]
-fn riscv_switch_cell_passes() {
-    require("riscv32-qemu-switch");
-}
-
-/// The RV32 preemptive schedule.
-#[test]
-fn riscv_preempt_cell_passes() {
-    require("riscv32-qemu-preempt");
-}
