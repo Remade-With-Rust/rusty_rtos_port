@@ -15,14 +15,23 @@
 //! Build with `--features tickless` for the second arm. That flag is the
 //! only difference between the two builds.
 //!
-//! # ⚠ THIS CELL HAS NEVER EXECUTED
+//! # Measured on the board
 //!
-//! It compiles and links for `xtensa-esp32s3-none-elf`. It has not been
-//! flashed, because the machine it was written on has no XIAO attached and
-//! no Espressif QEMU — stock `qemu-system-xtensa` has no `esp32s3` machine.
-//! Every number below is a number the board must produce; none is quoted
-//! from a run. The sibling `mps2-an385-qemu-tickless` is the arm that HAS
-//! run, and its findings are what this is modelled on.
+//! XIAO ESP32-S3 rev v0.2, 8 MB flash, 40 MHz crystal, MAC
+//! 68:ee:8f:51:74:64. Both claims hold:
+//!
+//! | | control | tickless |
+//! |---|---:|---:|
+//! | logical ticks | 400 | 400 |
+//! | **alarm wakeups** | **400** | **0** |
+//! | projected events | 195 | 195 |
+//! | context switches | 63 | 63 |
+//! | **schedule digest** | `ebb908b74bccb99e` | `ebb908b74bccb99e` |
+//!
+//! Four hundred wakeups to none, with a byte-identical schedule. The sleep
+//! diagnostics say 20 sleeps, 400 ticks asked for and 400 slept, the last
+//! window measuring 20,014us against a 20,000us request -- so the elapsed
+//! time really is being read off the counter rather than assumed.
 //!
 //! # Why the sleep is a different shape from the ARM one
 //!
@@ -41,6 +50,33 @@
 //! That is also why the handler must not touch the kernel while the flag is
 //! set — the idle task is inside `with_kernel` and holds it mutably. The
 //! flag check is the first statement in the handler for that reason.
+//!
+//! # ★ The bug the board found, which no amount of building would have
+//!
+//! The first run of the tickless arm FAILED, and the failure was the whole
+//! value of having hardware: **`waiti 0` does not just lower `PS.INTLEVEL`
+//! for the duration of the sleep — it SETS it to zero and leaves it there.**
+//! The interrupt that wakes you returns through `RFI`, which restores the PS
+//! `waiti` installed. So the caller's critical section is gone from the wake
+//! onward, not merely suspended during the sleep.
+//!
+//! Everything `idle_suppress_ticks` still had to do after the sleep —
+//! `step_tick`, `resume_all`, two trace events — therefore ran with
+//! interrupts open, on a kernel the idle task was holding `&mut` to. The
+//! symptom was not a crash but a scheduler that quietly stopped working: the
+//! worker never blocked, and the cell reported **20 logical ticks where the
+//! arithmetic says 400**.
+//!
+//! The cure is one line — re-raise the mask the instant `waiti` returns,
+//! before anything else. ARM needs no such line, because `wfi` leaves
+//! PRIMASK alone.
+//!
+//! **And the honest footnote:** two changes were made and only one mattered.
+//! The switch handler was also taught to decline while `SLEEPING`, on the
+//! theory that `Software0` could be taken in the open window. A counter says
+//! it fired **zero** times across the run. That path is defence in depth, it
+//! is not what fixed this, and it is labelled that way at its definition
+//! rather than quietly banked as part of the cure.
 //!
 //! # And why elapsed time is MEASURED rather than assumed
 //!
@@ -128,6 +164,20 @@ const ROUNDS: u32 = 20;
 /// stated here in the unit `Duration` takes, and asserted against the config
 /// in `main` so the two can never drift apart silently.
 const TICK_MICROS: u64 = 1_000;
+
+/// **The pinned schedule.** Both arms must produce this, and the fact that
+/// there is ONE constant for two arms is the cross-arm claim.
+///
+/// Measured 2026-09-19 on a XIAO ESP32-S3, rev v0.2, 8 MB flash, 40 MHz
+/// crystal, MAC 68:ee:8f:51:74:64, release profile. It is a digest of the
+/// `Scheduling` projection with the tick stamps left out -- see the header
+/// of `mps2-an385-qemu-tickless` for why they are left out.
+///
+/// **Re-pinning.** A kernel change that legitimately moves this scenario's
+/// schedule moves this number, and both arms move together. Run both, check
+/// they agree with each other, and write the new value here. If they do NOT
+/// agree with each other there is nothing to pin: the change broke tickless.
+const PINNED_ORDER: u64 = 0xebb9_08b7_4bcc_b99e;
 
 const TASKS: usize = 4;
 /// The timer daemon's command queue, and one spare.
@@ -253,6 +303,19 @@ static SLEEPING: AtomicBool = AtomicBool::new(false);
 static WAKEUPS: AtomicU32 = AtomicU32::new(0);
 static LAPS: AtomicU32 = AtomicU32::new(0);
 
+/// Diagnostics for the sleep itself. The first run of this cell on silicon
+/// failed the tick band -- 20 logical ticks where the arithmetic says 400 --
+/// and the report could not say whether the port was asked for the wrong
+/// window, measured the wrong elapsed time, or was not asked at all. These
+/// four answer that in one flashing.
+static SLEEP_CALLS: AtomicU32 = AtomicU32::new(0);
+static SLEEP_ASKED: AtomicU32 = AtomicU32::new(0);
+static SLEEP_SLEPT: AtomicU32 = AtomicU32::new(0);
+static SLEEP_LAST_US: AtomicU32 = AtomicU32::new(0);
+/// Switches declined because they landed inside a suppressed sleep. Non-zero
+/// is not a fault -- it is evidence the hazard above is real on this part.
+static DECLINED_SWITCHES: AtomicU32 = AtomicU32::new(0);
+
 /// `XtensaPort` with `vPortSuppressTicksAndSleep` on top.
 ///
 /// The mechanism cannot live in `rusty_rtos_port-xtensa` the way the ARM one
@@ -317,6 +380,8 @@ impl Port for TicklessPort {
     /// WHOLE ticks the free-running counter says went by. Zero declines, and
     /// every path that cannot account for the time exactly takes it.
     fn suppress_ticks_and_sleep(&self, expected_idle_ticks: u64) -> u64 {
+        SLEEP_CALLS.fetch_add(1, Ordering::Relaxed);
+        SLEEP_ASKED.fetch_add(expected_idle_ticks as u32, Ordering::Relaxed);
         if expected_idle_ticks == 0 {
             return 0;
         }
@@ -348,6 +413,19 @@ impl Port for TicklessPort {
         // holding; see this file's header.
         SLEEPING.store(true, Ordering::SeqCst);
         self.inner.idle();
+        // ★ `waiti 0` SETS PS.INTLEVEL to zero, and leaves it there. The
+        // interrupt that woke us returns through RFI, which restores the PS
+        // `waiti` installed -- so the caller's critical section is GONE from
+        // here on, and everything `idle_suppress_ticks` still has to do
+        // (`step_tick`, `resume_all`, two trace events) would run with
+        // interrupts open, on a kernel this task is holding `&mut` to. Put
+        // the mask back before anything else happens.
+        //
+        // This is the whole of the difference from the ARM port, where `wfi`
+        // leaves PRIMASK alone and the critical section survives the sleep.
+        // Measured: without this the worker stopped blocking altogether --
+        // 20 logical ticks where the arithmetic says 400.
+        let _ = self.inner.set_interrupt_mask_from_isr();
         SLEEPING.store(false, Ordering::SeqCst);
 
         alarm.stop();
@@ -362,8 +440,11 @@ impl Port for TicklessPort {
         // Whole ticks only. Reporting a part-tick would wind the kernel's
         // clock past a wake time, and the kernel clamps an overclaim rather
         // than trusting it -- but it cannot rescue one it was told was whole.
+        SLEEP_LAST_US.store(elapsed as u32, Ordering::Relaxed);
         let slept = elapsed.checked_div(TICK_MICROS).unwrap_or(0);
-        slept.min(expected_idle_ticks)
+        let slept = slept.min(expected_idle_ticks);
+        SLEEP_SLEPT.fetch_add(slept as u32, Ordering::Relaxed);
+        slept
     }
 }
 
@@ -453,6 +534,17 @@ static CURRENT: AtomicU32 = AtomicU32::new(MAIN as u32);
 #[unsafe(export_name = "Software0")]
 fn switching_interrupt(trap_frame: &mut Context) {
     clear_switch_request();
+
+    // Interrupts really are open across `waiti 0`, so this can be taken
+    // while the idle task is inside `with_kernel` holding the kernel `&mut`.
+    // Touching it here would alias that borrow and switch away from a task
+    // in the middle of suspending the scheduler. Decline: `resume_all` at
+    // the end of `idle_suppress_ticks` re-pends a switch if one is still
+    // owed, so nothing is lost by not doing it now.
+    if SLEEPING.load(Ordering::SeqCst) {
+        DECLINED_SWITCHES.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
 
     let from = CURRENT.load(Ordering::Acquire) as usize;
     let to = with_kernel_in_isr(|k| {
@@ -576,6 +668,17 @@ fn finish() -> ! {
     println!("alarm wakeups         {wakeups}");
     println!("scheduler stalls      {stalls}   first: {why:?}");
     println!("projected events      {events}   switches {switches}");
+    println!(
+        "sleeps                {}   asked {}   slept {}   last {}us",
+        SLEEP_CALLS.load(Ordering::SeqCst),
+        SLEEP_ASKED.load(Ordering::SeqCst),
+        SLEEP_SLEPT.load(Ordering::SeqCst),
+        SLEEP_LAST_US.load(Ordering::SeqCst)
+    );
+    println!(
+        "switches declined     {}   (landed inside a suppressed sleep)",
+        DECLINED_SWITCHES.load(Ordering::SeqCst)
+    );
     println!("SCHEDULE DIGEST       {order:016x}   (order: who ran, in what order)");
     println!("  ...with tick stamps {timed:016x}   (diagnostic -- see the header)");
 

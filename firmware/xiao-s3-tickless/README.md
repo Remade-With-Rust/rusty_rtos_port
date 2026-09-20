@@ -15,16 +15,75 @@ and the first did not exist anywhere in this tree:
 2. **Tickless idle suppresses those interrupts without moving the schedule**,
    as `mps2-an385-qemu-tickless` has measured on ARM.
 
-## ⚠ This cell has never executed
+## Measured on the board
 
-It compiles and links for `xtensa-esp32s3-none-elf`, both arms. **It has not
-been flashed.** The machine it was written on has no XIAO attached and no
-Espressif QEMU — stock `qemu-system-xtensa` offers `kc705`, `lx60`, `lx200`,
-`ml605`, `sim` and `virt`, and no `esp32s3`.
+Flashed to a XIAO ESP32-S3 (rev v0.2, 8 MB flash, 40 MHz crystal, MAC
+68:ee:8f:51:74:64) over `espflash` on COM4.
 
-So every number this README describes is a number *the board must produce*.
-None is quoted from a run. Its ARM sibling is the arm that has actually run,
-and its measured findings are what this is modelled on.
+**Claim 1 — the Kernel runs from a tick on Xtensa — PASSES on silicon.**
+
+```
+arm                   plain
+laps                  20   (want 20)
+logical ticks         400
+alarm wakeups         400
+scheduler stalls      0   first: None
+projected events      195   switches 63
+SCHEDULE DIGEST       ebb908b74bccb99e
+RESULT: PASS
+```
+
+400 ticks for 400 laps' worth of delay, every one paid for with an
+interrupt, no stalls. That is the K3 prerequisite met: `SYSTIMER` alarm 0 ->
+`Kernel::increment_tick` -> `Software0` -> `Kernel::switch_context`, on a
+real Xtensa part.
+
+**Claim 2 — tickless suppresses them without moving the schedule — PASSES
+too.**
+
+| | control | tickless |
+|---|---:|---:|
+| logical ticks | 400 | 400 |
+| **alarm wakeups** | **400** | **0** |
+| projected events | 195 | 195 |
+| context switches | 63 | 63 |
+| **schedule digest** | `ebb908b74bccb99e` | `ebb908b74bccb99e` |
+
+Four hundred wakeups to none, same schedule, digest byte-identical and
+pinned. The sleep diagnostics read 20 sleeps, 400 ticks asked and 400 slept,
+the last window measuring 20,014 us against a 20,000 us request — the
+elapsed time is genuinely read off the counter, not assumed.
+
+## ★ The bug the board found, which building never would have
+
+The first run of the tickless arm **failed**, and that failure is the whole
+argument for owning hardware.
+
+`waiti 0` does not merely lower `PS.INTLEVEL` for the duration of the sleep.
+It **sets it to zero and leaves it there** — the interrupt that wakes you
+returns through `RFI`, which restores the PS that `waiti` installed. So the
+caller's critical section is gone from the wake onward, not just suspended
+during the sleep.
+
+Everything `idle_suppress_ticks` still had to do after the sleep —
+`step_tick`, `resume_all`, two trace events — ran with interrupts open, on a
+kernel the idle task held `&mut` to. It did not crash. The scheduler just
+quietly stopped working: the worker never blocked, and the cell reported
+**20 logical ticks where the arithmetic says 400**.
+
+The cure is one line, re-raising the mask the instant `waiti` returns. ARM
+needs no equivalent, because `wfi` leaves PRIMASK alone. This is the kind of
+defect that reads as a scheduler logic bug for a day before anyone suspects
+the instruction — and no amount of compiling, linking, section-sizing or
+disassembly would have found it.
+
+### The honest footnote
+
+Two changes were made and **only one mattered.** The switch handler was also
+taught to decline while `SLEEPING`, on the theory that `Software0` could be
+taken in the open window. The counter for it reads **zero** across the whole
+run. That path is defence in depth; it is not what fixed this, and it is
+labelled so rather than banked as part of the cure.
 
 ```
 cargo run --release                        # the plain control arm
@@ -44,10 +103,10 @@ projected events      ...   switches ...
 SCHEDULE DIGEST       xxxxxxxxxxxxxxxx   <- must MATCH across the two arms
 ```
 
-Each arm gates itself on laps, stalls, the tick band and its own wakeup
-claim. The cross-arm claim is that the two `SCHEDULE DIGEST` lines are equal.
-Unlike the ARM cell the digest is **not pinned**, because nobody has run this
-to learn what it is; pin it once the board has said.
+Each arm gates itself on laps, stalls, the pinned digest, the tick band and
+its own wakeup claim, so either command alone is a kill test. The digest is
+pinned at `ebb908b74bccb99e`, and one constant serves both arms — that is the
+cross-arm claim, carried by a number rather than by a promise to run a diff.
 
 If the control arm alone passes, claim 1 is proved and the K3 prerequisite is
 gone even if tickless needs work.
@@ -98,6 +157,42 @@ The cell therefore defines a `TicklessPort` newtype wrapping `XtensaPort`,
 delegating the `Port` trait and adding `suppress_ticks_and_sleep`. If a
 second ESP part ever wants this, the newtype is what gets promoted into a
 `rusty_rtos_port-esp` crate, not the Xtensa port.
+
+## Verified without the board
+
+Both arms build, link, and produce a flashable merged image. Measured on the
+linked artifact rather than argued from the source:
+
+| | control | tickless |
+|---|---:|---:|
+| app image | 97,696 B | 99,344 B |
+| share of the 4 MB partition | 2.37% | 2.41% |
+| `waiti` instructions | **0** | **1** |
+| `SLEEPING` static | absent | present |
+
+`.bss` is 25,792 B — the three 8 KB task stacks, present and correctly sized
+— and `.data` + `.bss` + `.stack` is ~334 KB of the S3's 512 KB SRAM, so it
+fits with room. The `KERNEL` static is 2,264 B.
+
+The instruction counts are a **reachability** check, not trivia: a cell that
+compiles is not a cell whose new code is wired. With `USE_TICKLESS_IDLE`
+false LLVM proves the whole sleep path dead and deletes it, `waiti` included;
+with it true the sleep is there. The two images differ, so the feature flag
+reaches the binary rather than being quietly ignored.
+
+### ⚠ The control arm busy-spins, so it is not a fair CURRENT baseline
+
+That zero is also a caveat. `idle_suppress_ticks` returns immediately when
+the const is false, and this cell's idle task does nothing else — so the
+control arm never reaches `XtensaPort::idle`'s `waiti 0` and spins the core
+flat out instead.
+
+That is the right control for the claim being made here, because **wakeups**
+is the quantity, and a `waiti`-ing idle task would be woken by every one of
+those ticks just the same. It is the WRONG control for a current measurement:
+against a spinning baseline tickless would look far better than it deserves.
+M3c must compare against an idle task that calls `Port::idle`, not against
+this one.
 
 ## What this cell does NOT claim
 
