@@ -1,0 +1,47 @@
+[package]
+name = "xiao-s3-tickless"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[features]
+# THE ONLY DIFFERENCE BETWEEN THE TWO ARMS. It flips
+# `Config::USE_TICKLESS_IDLE`; the kernel's `idle_suppress_ticks` returns
+# immediately when it is false, so both arms run the same tasks, the same
+# delays and the same idle loop.
+default = []
+tickless = []
+
+[dependencies]
+rusty_rtos_port-xtensa = { path = "../../crates/rusty_rtos_port-xtensa", default-features = false }
+# By PATH, as the `mps2-an385-qemu-*` cells explain at length: a cell that
+# gates kernel changes must build against the kernel under test, and a git
+# dependency resolves to the published one. Core is by path for the same
+# reason and one more -- `kairos patches` writes only `[patch.crates-io]`,
+# which cannot redirect a git dependency, and two sources for one crate is
+# two crates.
+rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
+
+esp-hal = { version = "=1.2.1", features = ["esp32s3", "unstable"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", default-features = false, features = [
+    "esp32s3",
+    "jtag-serial",
+] }
+esp-backtrace = { version = "=0.20.0", features = [
+    "esp32s3",
+    "panic-handler",
+    "println",
+] }
+critical-section = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+
+[workspace]
