@@ -7,9 +7,29 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 rusty_rtos_port-cortex-m = { path = "../../crates/rusty_rtos_port-cortex-m" }
-# The scheduler itself. Siblings by git URL, as firmware/README.md says.
-rusty_rtos_kernel-core = { git = "https://github.com/Remade-With-Rust/rusty_rtos_kernel", default-features = false }
-rusty_rtos_core = { git = "https://github.com/Remade-With-Rust/rusty_rtos_core", default-features = false }
+# By PATH, not by git, and deliberately against `firmware/README.md`'s
+# "siblings by git URL as usual" -- the same trade its sibling
+# `mps2-an385-qemu-preempt` already made, and for the reason that sibling's
+# manifest names THIS cell for:
+#
+#   "a git dependency resolves to the published kernel, so the cell would
+#    build green against code that is not the code under test -- which is
+#    what the sibling `mps2-an385-qemu-kernel` cell does today, and why it
+#    has never exercised a local kernel edit."
+#
+# It was worse than that: `rusty_rtos_port-cortex-m` is a PATH dependency
+# and declares its own `rusty_rtos_core`, so the cell had that crate from
+# two sources at once. Two sources for one crate is two crates, and
+# `CortexMPort` then implements a `Port` trait that is not the `Port` the
+# kernel wants. That is docs/HOLES.md H8, and this is its cause rather
+# than a symptom of it.
+#
+# The cost is the one the sibling states: this cell cannot be built from a
+# standalone clone of `rusty_rtos_port`. It is a gate over kernel changes,
+# and a gate that cannot see the change it gates is worth less than one
+# that cannot be built alone.
+rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
 
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
