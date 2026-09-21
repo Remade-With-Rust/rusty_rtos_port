@@ -19,15 +19,34 @@ rusty_rtos_alloc = { path = "../../../rusty_rtos_core/crates/rusty_rtos_alloc", 
 # The seam, and the radio behind it.
 # `ipc-implementations` is what exposes `wait_queue` and the two task
 # priority methods; without it the driver is a smaller trait set.
-esp-radio-rtos-driver = { version = "=0.4.1", features = ["esp32s3", "ipc-implementations"] }
-# esp-radio is NOT linked yet, and the reason is a companion-set conflict
-# rather than a choice: `esp-radio 1.0.0-beta.0` -- the only published
-# radio -- pins `esp-hal ~1.1.0` and `esp-radio-rtos-driver 0.3.0`, while
-# every Kairos S3 cell pins `esp-hal =1.2.1`. `xtensa-lx-rt` is a `links`
-# crate, so the two esp-hal lines cannot coexist in one binary. Until that
-# is settled, this cell proves the SEAM: all five traits implemented and
-# registered against the driver.
-# esp-radio = { version = "=1.0.0-beta.0", features = ["esp32s3", "wifi"] }
+esp-radio-rtos-driver = { version = "=0.4.2", features = ["esp32s3", "ipc-implementations"] }
+# esp-radio is NOT linked, and the recorded reason for that is now WRONG.
+#
+# The old note said: "`esp-radio 1.0.0-beta.0` -- the only published radio --
+# pins `esp-hal ~1.1.0` and `esp-radio-rtos-driver 0.3.0`, while every Kairos
+# S3 cell pins `esp-hal =1.2.1`. `xtensa-lx-rt` is a `links` crate, so the two
+# esp-hal lines cannot coexist." That was true on 2026-09-11 and is not true
+# now. Re-checked 2026-09-21: `esp-radio 1.0.0-beta.1` with
+# `esp-radio-rtos-driver 0.4.2` RESOLVES and BUILDS against our exact
+# `esp-hal =1.2.1` -- 193 packages, exit 0, no esp-hal complaint at all.
+#
+# So the companion-set blocker is gone. What remains is smaller and different:
+# adding the dependency links NOTHING. Measured as an A/B over a clean build
+# with the binaries compared byte for byte:
+#
+#     without esp-radio   276,820 bytes, 2,416 symbols
+#     with    esp-radio   276,820 bytes, 2,416 symbols
+#
+# The hashes differ and the symbol SETS differ by 64 each way, but every one
+# of those 64 is one of our own names whose crate-disambiguator hash moved
+# between compilation sessions. No esp-radio code is in the binary: LTO drops
+# it because nothing in this cell CALLS it, which is what the original note
+# said and is still the live reason.
+#
+# Meeting the checklist item therefore needs a real esp-radio call path -- the
+# Wi-Fi controller -- and verifying it needs the board. That is the work, and
+# it is now unblocked work rather than a pin decision nobody could take.
+# esp-radio = { version = "=1.0.0-beta.1", features = ["esp32s3", "wifi"] }
 
 heapless = { version = "0.8", default-features = false }
 
