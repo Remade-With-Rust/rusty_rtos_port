@@ -548,7 +548,7 @@ type K = Kernel<
     Tr,
     NoTickHook,
     TASKS,
-    { items_for(TASKS, TIMERS) },
+    { list_slots_for(TASKS, TIMERS, lists_for(CellConfig::MAX_PRIORITIES, QUEUES, GROUPS)) },
     { lists_for(CellConfig::MAX_PRIORITIES, QUEUES, GROUPS) },
     QUEUES,
     SLOTS,

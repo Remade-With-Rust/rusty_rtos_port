@@ -94,7 +94,7 @@ pub type K = Kernel<
     NoTrace,
     NoTickHook,
     MAX_TASKS,
-    { items_for(MAX_TASKS, TIMERS) },
+    { list_slots_for(MAX_TASKS, TIMERS, lists_for(MAX_PRIORITIES, QUEUES, GROUPS)) },
     { lists_for(MAX_PRIORITIES, QUEUES, GROUPS) },
     QUEUES,
     SLOTS,

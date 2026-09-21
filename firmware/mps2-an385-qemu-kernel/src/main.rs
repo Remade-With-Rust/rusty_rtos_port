@@ -89,7 +89,7 @@ type K = Kernel<
     NoTrace,
     NoTickHook,
     TASKS,
-    { items_for(TASKS, TIMERS) },
+    { list_slots_for(TASKS, TIMERS, lists_for(M3Config::MAX_PRIORITIES, QUEUES, GROUPS)) },
     { lists_for(M3Config::MAX_PRIORITIES, QUEUES, GROUPS) },
     QUEUES,
     SLOTS,
