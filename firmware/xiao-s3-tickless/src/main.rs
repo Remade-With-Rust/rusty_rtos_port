@@ -124,7 +124,7 @@ use rusty_rtos_core::isr::Woken;
 use rusty_rtos_core::port::Port;
 use rusty_rtos_core::tick::Bits32;
 use rusty_rtos_core::trace::{Event, Scheduling, Trace};
-use rusty_rtos_kernel_core::{Kernel, Stall, items_for, lists_for};
+use rusty_rtos_kernel_core::{Kernel, Stall, list_slots_for, lists_for};
 use rusty_rtos_port_xtensa::{
     Context, XtensaPort, clear_switch_request, enable_switching, new_task_context, switch_context,
     yield_now,

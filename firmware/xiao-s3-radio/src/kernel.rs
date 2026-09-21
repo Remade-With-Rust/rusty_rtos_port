@@ -42,7 +42,7 @@ use rusty_rtos_core::handle::TaskHandle;
 use rusty_rtos_core::hooks::NoTickHook;
 use rusty_rtos_core::tick::Bits32;
 use rusty_rtos_core::trace::{Event, Trace};
-use rusty_rtos_kernel_core::{items_for, lists_for, Kernel};
+use rusty_rtos_kernel_core::{list_slots_for, lists_for, Kernel};
 use rusty_rtos_port_xtensa::{clear_switch_request, switch_context, Context, XtensaPort};
 
 /// Priorities: idle at 0, the radio's tasks between, the timer service at

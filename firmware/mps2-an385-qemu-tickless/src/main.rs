@@ -115,7 +115,7 @@ use rusty_rtos_core::handle::TaskHandle;
 use rusty_rtos_core::hooks::NoTickHook;
 use rusty_rtos_core::tick::Bits32;
 use rusty_rtos_core::trace::{Event, Scheduling, Trace};
-use rusty_rtos_kernel_core::{Kernel, Stall, items_for, lists_for};
+use rusty_rtos_kernel_core::{Kernel, Stall, list_slots_for, lists_for};
 use rusty_rtos_port_cortex_m::{
     CURRENT_SP_SLOT, CortexMPort, init_stack, set_scheduler, start_first_task, start_tick,
 };
