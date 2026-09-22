@@ -16,7 +16,7 @@ categories = ["os", "simulation"]
 [dependencies]
 # The house shape: depend on the published URL; `kairos patches` writes a
 # `.cargo/config.toml` that points it at the sibling checkout for local work.
-rusty_rtos_core = { version = "0.1.0", default-features = false, features = ["std"] }
+rusty_rtos_core = { version = "0.2.0", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

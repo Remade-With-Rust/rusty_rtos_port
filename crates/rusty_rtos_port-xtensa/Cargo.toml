@@ -14,7 +14,7 @@ keywords = ["rtos", "xtensa", "freertos", "embedded", "remade-with-rust"]
 categories = ["embedded", "no-std"]
 
 [dependencies]
-rusty_rtos_core = { version = "0.1.0", default-features = false }
+rusty_rtos_core = { version = "0.2.0", default-features = false }
 
 # Only on Xtensa: the trap frame this port switches BY COPYING is the one
 # `xtensa-lx-rt`'s interrupt entry fills in, windows already spilled. The
