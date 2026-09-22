@@ -21,7 +21,7 @@ rusty_rtos_core = { version = "0.2.0", default-features = false }
 # host build has no such thing and needs no such thing -- it exists so
 # callers keep type-checking on stable.
 [target.'cfg(target_arch = "xtensa")'.dependencies]
-xtensa-lx = "0.12"
+xtensa-lx = "0.13"
 # Pinned to what `esp-hal 1.2.1` resolves: `xtensa-lx-rt` is a `links`
 # crate, so two versions in one graph is a build error rather than a
 # duplicate.
