@@ -341,7 +341,7 @@ name = "rusty_rtos_port-xtensa"
 version = "0.2.0"
 dependencies = [
  "rusty_rtos_core",
- "xtensa-lx 0.12.0",
+ "xtensa-lx 0.13.0",
  "xtensa-lx-rt",
 ]
 
