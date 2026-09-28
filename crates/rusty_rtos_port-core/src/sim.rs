@@ -201,8 +201,58 @@ impl Port for SimPort {
     }
 
     fn exit_critical(&self) {
-        let nesting = self.nesting.get().saturating_sub(1);
-        self.nesting.set(nesting);
+        // ONE compare, not three. `saturating_sub(1)` then `if nesting != 0`
+        // cost a `cmp`, an `adc` to build the saturated value, and then a SECOND
+        // `cmp` of the same value -- because the `mov`/`adc` between them
+        // clobbered the flags the first one set. This function is inlined FOUR
+        // TIMES into `queue_take_blocking` alone (one per critical section it
+        // takes), where it is about 50 of that function's 225 instructions, and
+        // it runs over a hundred thousand times per scenario.
+        //
+        // Identical behaviour, arm for arm:
+        //
+        //   n = 0   saturating gave 0, `!= 0` was false, fell through to the
+        //           outermost path -- and so does this
+        //   n = 1   saturating gave 0, same fall-through -- same here
+        //   n > 1   saturating gave n-1, returned early -- same here, and the
+        //           guard proves n >= 2 so the subtraction cannot underflow
+        // ★ The 64-bit form is `cfg`'d, and the reason is that the two
+        // architectures want opposite code here.
+        //
+        // On x86-64 `saturating_sub(1)` then `if nesting != 0` emits a `cmp`, a
+        // `mov`, an `adc` to build the saturated value, and then a SECOND `cmp`
+        // of the same register -- the `mov`/`adc` clobbered the flags the first
+        // one set. Guarding instead removes that: **−2,412,746 Ir on
+        // `bench/kernel-ir`, 1.08% of the whole program**, spread across every
+        // function that takes a critical section (`step` −682,657,
+        // `switch_context` −553,524, `queue_take_blocking` −202,745,
+        // `unlock_queue` −293,502, and eight more, none positive).
+        //
+        // On rv32 the same source is WORSE by about two instructions a call --
+        // `bench/tick-work` read `block_cycle` 977 → 984 and `recv_empty`
+        // 39 → 46 -- because it has no conditional move, so the guard becomes a
+        // real branch with a duplicated continuation where `saturating_sub`
+        // lowered to three straight-line ALU ops. Writing it as one store and
+        // one reused compare changed nothing; LLVM canonicalises both forms.
+        //
+        // Firmware is unaffected either way: this is `SimPort`, and a silicon
+        // port's critical section is `csrci`/`csrsi`. The rv32 rows that moved
+        // are measuring the simulator's software clock, not anything that ships.
+        // So the host gets the faster shape and the target keeps its published
+        // numbers.
+        #[cfg(target_pointer_width = "64")]
+        let nesting = {
+            let n = self.nesting.get();
+            let next = if n > 1 { n.wrapping_sub(1) } else { 0 };
+            self.nesting.set(next);
+            next
+        };
+        #[cfg(not(target_pointer_width = "64"))]
+        let nesting = {
+            let next = self.nesting.get().saturating_sub(1);
+            self.nesting.set(next);
+            next
+        };
         if nesting != 0 {
             return;
         }
