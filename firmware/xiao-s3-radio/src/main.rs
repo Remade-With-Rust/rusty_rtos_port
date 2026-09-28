@@ -44,8 +44,12 @@
 
 extern crate alloc;
 
-mod adapter;
 mod kernel;
+
+// The five driver implementations now come from a crate, not from a
+// `src/adapter.rs` in this directory. See its Cargo.toml entry: a firmware
+// directory is not consumable, so this cell is the crate's first CONSUMER.
+use rusty_rtos_port_esp_radio as adapter;
 
 // The registration macros expand to `extern "C"` shims that name `c_void`,
 // so it has to be in scope where they are written.

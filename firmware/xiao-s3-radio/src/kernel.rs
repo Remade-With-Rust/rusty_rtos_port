@@ -30,7 +30,6 @@
 #![allow(dead_code, reason = "main is a placeholder until the radio can link")]
 
 use core::cell::UnsafeCell;
-use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use esp_hal::time::{Duration, Instant};
@@ -38,11 +37,14 @@ use esp_hal::timer::PeriodicTimer;
 use esp_hal::timer::systimer::SystemTimer;
 
 use rusty_rtos_core::config::Config;
-use rusty_rtos_core::handle::TaskHandle;
+use rusty_rtos_core::handle::{QueueHandle, TaskHandle};
+use rusty_rtos_core::isr::Woken;
 use rusty_rtos_core::hooks::NoTickHook;
 use rusty_rtos_core::tick::Bits32;
 use rusty_rtos_core::trace::{Event, Trace};
+use rusty_rtos_kernel_core::queue::Wait;
 use rusty_rtos_kernel_core::{list_slots_for, lists_for, Kernel};
+use rusty_rtos_port_esp_radio::Blocked;
 use rusty_rtos_port_xtensa::{clear_switch_request, switch_context, Context, XtensaPort};
 
 /// Priorities: idle at 0, the radio's tasks between, the timer service at
@@ -108,6 +110,7 @@ pub type K = Kernel<
     64,
     TIMERS,
     GROUPS,
+    { <RadioConfig as ::rusty_rtos_core::config::Config>::TIMER_QUEUE_LENGTH },
 >;
 
 struct KernelCell(UnsafeCell<Option<K>>);
@@ -293,8 +296,8 @@ fn switching_interrupt(trap_frame: &mut Context) {
 
     let Some((from, to)) = moved else { return };
     let (Some(out), Some(into)) = (
-        crate::adapter::context_of(from),
-        crate::adapter::context_of(to),
+        rusty_rtos_port_esp_radio::context_of(from),
+        rusty_rtos_port_esp_radio::context_of(to),
     ) else {
         // A kernel task with no stack of its own -- idle or the timer
         // daemon.
@@ -308,165 +311,155 @@ fn switching_interrupt(trap_frame: &mut Context) {
     unsafe { switch_context(Some(out), into, trap_frame) };
 }
 
+// ------------------------------------------------------------ the host --
+
+/// What this cell hands `rusty_rtos_port-esp-radio`.
+///
+/// The crate holds the five driver implementations and asks a host for the
+/// kernel behind them. Everything below is a forward: the interesting part
+/// is that there is nothing interesting, which is the point of the seam.
+pub struct Host;
+
+/// The one installed host. `&'static` because the driver reaches the crate
+/// from `extern "C"` shims that carry no state of their own.
+pub static HOST: Host = Host;
+
+/// The kernel, wearing the seam's trait.
+///
+/// A newtype rather than `impl KernelOps for K`, because the orphan rule
+/// forbids that: `Kernel` belongs to `rusty_rtos_kernel-core` and `KernelOps`
+/// to `rusty_rtos_port-esp-radio`, and neither is this cell's. Every consumer
+/// meets this, so the crate's own docs show the wrapper.
+///
+/// It borrows rather than owns, so it costs nothing: `Ops(k)` is built inside
+/// `with_kernel` around the borrow that already exists.
+pub struct Ops<'a>(pub &'a mut K);
+
+impl rusty_rtos_port_esp_radio::KernelOps for Ops<'_> {
+    fn current(&mut self) -> TaskHandle {
+        self.0.current()
+    }
+
+    fn create_task(&mut self, name: &str, priority: u8) -> Option<TaskHandle> {
+        self.0.create_task(name, priority).ok()
+    }
+
+    fn task_delete(&mut self, task: Option<TaskHandle>) -> Option<()> {
+        self.0.task_delete(task).ok()
+    }
+
+    fn task_priority_get(&mut self, task: Option<TaskHandle>) -> Option<u8> {
+        self.0.task_priority_get(task).ok()
+    }
+
+    fn set_priority(&mut self, task: Option<TaskHandle>, priority: u8) -> Option<()> {
+        self.0.set_priority(task, priority).ok()
+    }
+
+    fn delay(&mut self, ticks: u64) -> Option<()> {
+        self.0.delay(ticks).ok()
+    }
+
+    fn semaphore_create_counting(&mut self, max: usize, initial: usize) -> Option<QueueHandle> {
+        self.0.semaphore_create_counting(max, initial).ok()
+    }
+
+    fn semaphore_take(&mut self, semaphore: QueueHandle, ticks: u64) -> Option<Blocked> {
+        self.0.semaphore_take(semaphore, ticks).ok().map(wait)
+    }
+
+    fn semaphore_give(&mut self, semaphore: QueueHandle) -> Option<Blocked> {
+        self.0.semaphore_give(semaphore).ok().map(wait)
+    }
+
+    fn semaphore_give_from_isr(&mut self, semaphore: QueueHandle) -> Option<bool> {
+        self.0
+            .semaphore_give_from_isr(semaphore)
+            .ok()
+            .map(|w| w == Woken::YES)
+    }
+
+    fn semaphore_count(&mut self, semaphore: QueueHandle) -> Option<usize> {
+        self.0.semaphore_count(semaphore).ok()
+    }
+
+    fn mutex_create(&mut self) -> Option<QueueHandle> {
+        self.0.mutex_create().ok()
+    }
+
+    fn mutex_create_recursive(&mut self) -> Option<QueueHandle> {
+        self.0.mutex_create_recursive().ok()
+    }
+
+    fn queue_delete(&mut self, queue: QueueHandle) -> Option<()> {
+        self.0.queue_delete(queue).ok()
+    }
+}
+
+/// The kernel's `Wait<()>` as the seam's [`Blocked`].
+///
+/// Two states each, and they correspond exactly — there is no timeout arm on
+/// either side, because a kernel that parks you answers `Blocked` and expects
+/// the same call again.
+fn wait(w: Wait<()>) -> Blocked {
+    match w {
+        Wait::Ready(()) => Blocked::Completed,
+        Wait::Blocked => Blocked::Blocked,
+    }
+}
+
+impl rusty_rtos_port_esp_radio::RadioHost for Host {
+    fn max_tasks(&self) -> usize {
+        MAX_TASKS
+    }
+
+    fn max_priorities(&self) -> u8 {
+        MAX_PRIORITIES
+    }
+
+    fn tick_hz(&self) -> u32 {
+        <RadioConfig as Config>::TICK_RATE_HZ
+    }
+
+    fn scheduler_started(&self) -> bool {
+        started()
+    }
+
+    fn enter_critical(&self) -> u32 {
+        mask()
+    }
+
+    fn exit_critical(&self, token: u32) {
+        unmask(token);
+    }
+
+    fn now_us(&self) -> u64 {
+        now_us()
+    }
+
+    fn yield_and_switch(&self) {
+        yield_and_switch();
+    }
+
+    fn with_kernel(&self, f: &mut dyn FnMut(&mut dyn rusty_rtos_port_esp_radio::KernelOps)) {
+        // The borrow is held for the WHOLE closure, which is the seam's
+        // stated contract and the reason it was not flattened to one method
+        // per kernel call: several callers do three or four operations here
+        // and rely on no other task running between them.
+        with_kernel(&mut |k: &mut K| {
+            f(&mut Ops(k));
+            Some(())
+        });
+    }
+}
+
 // -------------------------------------------------------- radio timers --
 
-/// One radio timer.
-///
-/// The kernel's own software timers dispatch by a `u16` callback index
-/// through its daemon, which does not fit a C function pointer handed over
-/// at runtime. So the radio's timers are kept here and serviced by a task
-/// of this cell's own, built on nothing but `delay` and [`now_us`].
-#[derive(Clone, Copy)]
-struct RadioTimer {
-    used: bool,
-    active: bool,
-    periodic: bool,
-    period_us: u64,
-    due_us: u64,
-    callback: Option<unsafe extern "C" fn(*mut c_void)>,
-    data: *mut c_void,
-}
-
-const MAX_RADIO_TIMERS: usize = 16;
-
-static mut TIMERS_TABLE: [RadioTimer; MAX_RADIO_TIMERS] = [RadioTimer {
-    used: false,
-    active: false,
-    periodic: false,
-    period_us: 0,
-    due_us: 0,
-    callback: None,
-    data: core::ptr::null_mut(),
-}; MAX_RADIO_TIMERS];
-
-static TIMER_SLOTS_USED: AtomicU32 = AtomicU32::new(0);
-
-/// Claim a slot for a radio timer; the index is its identity.
-pub fn remember_timer(callback: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> usize {
-    let saved = mask();
-    let mut found = usize::MAX;
-    // SAFETY: interrupts masked, single core.
-    unsafe {
-        let table = (&raw mut TIMERS_TABLE).cast::<RadioTimer>();
-        for i in 0..MAX_RADIO_TIMERS {
-            if !(*table.add(i)).used {
-                *table.add(i) = RadioTimer {
-                    used: true,
-                    active: false,
-                    periodic: false,
-                    period_us: 0,
-                    due_us: 0,
-                    callback: Some(callback),
-                    data,
-                };
-                found = i;
-                break;
-            }
-        }
-    }
-    unmask(saved);
-    if found != usize::MAX {
-        TIMER_SLOTS_USED.fetch_add(1, Ordering::Relaxed);
-    }
-    found
-}
-
-/// Release a slot.
-pub fn forget_timer(index: usize) {
-    if index >= MAX_RADIO_TIMERS {
-        return;
-    }
-    let saved = mask();
-    // SAFETY: as `remember_timer`.
-    unsafe {
-        let table = (&raw mut TIMERS_TABLE).cast::<RadioTimer>();
-        (*table.add(index)).used = false;
-        (*table.add(index)).active = false;
-    }
-    unmask(saved);
-}
-
-/// Arm a slot.
-pub fn arm_timer(index: usize, timeout_us: u64, periodic: bool) {
-    if index >= MAX_RADIO_TIMERS {
-        return;
-    }
-    let saved = mask();
-    // SAFETY: as `remember_timer`.
-    unsafe {
-        let table = (&raw mut TIMERS_TABLE).cast::<RadioTimer>();
-        (*table.add(index)).active = true;
-        (*table.add(index)).periodic = periodic;
-        (*table.add(index)).period_us = timeout_us;
-        (*table.add(index)).due_us = now_us().saturating_add(timeout_us);
-    }
-    unmask(saved);
-}
-
-/// Disarm a slot.
-pub fn disarm_timer(index: usize) {
-    if index >= MAX_RADIO_TIMERS {
-        return;
-    }
-    let saved = mask();
-    // SAFETY: as `remember_timer`.
-    unsafe {
-        let table = (&raw mut TIMERS_TABLE).cast::<RadioTimer>();
-        (*table.add(index)).active = false;
-    }
-    unmask(saved);
-}
-
-/// Whether a slot is armed.
-pub fn timer_active(index: usize) -> bool {
-    if index >= MAX_RADIO_TIMERS {
-        return false;
-    }
-    let saved = mask();
-    // SAFETY: as `remember_timer`.
-    let out = unsafe {
-        let table = (&raw const TIMERS_TABLE).cast::<RadioTimer>();
-        (*table.add(index)).active
-    };
-    unmask(saved);
-    out
-}
-
-/// Fire every timer that is due, and answer how many.
-///
-/// Called by the cell's timer-service task. The callback runs OUTSIDE the
-/// mask: a radio callback may take semaphores, and holding an interrupt
-/// mask across that would deadlock the first time one blocked.
-pub fn service_timers() -> u32 {
-    let mut fired = 0;
-    let now = now_us();
-    for i in 0..MAX_RADIO_TIMERS {
-        let saved = mask();
-        // SAFETY: as `remember_timer`.
-        let due = unsafe {
-            let table = (&raw mut TIMERS_TABLE).cast::<RadioTimer>();
-            let t = *table.add(i);
-            if t.used && t.active && now >= t.due_us {
-                if t.periodic {
-                    (*table.add(i)).due_us = now.saturating_add(t.period_us);
-                } else {
-                    (*table.add(i)).active = false;
-                }
-                t.callback.map(|cb| (cb, t.data))
-            } else {
-                None
-            }
-        };
-        unmask(saved);
-        if let Some((cb, data)) = due {
-            // SAFETY: the pointer came from `TimerImplementation::create`,
-            // and the radio keeps it valid until it deletes the timer.
-            unsafe { cb(data) };
-            fired += 1;
-        }
-    }
-    fired
-}
+// The radio's software timer table USED to be here: 16 slots, a due-time
+// comparison, and a `service_timers` the cell's own task called. It is now
+// `rusty_rtos_port_esp_radio::service_timers`, because it never touched
+// kernel state — only a clock and a mask — and keeping it beside the kernel
+// is what made it LOOK like kernel state and kept the glue unconsumable.
 
 /// Bring the kernel up and make `main` a task the scheduler can switch away
 /// from.
@@ -525,6 +518,17 @@ pub fn boot() -> bool {
         Err(_) => return false,
     };
     install(kernel);
+    // Hand the driver crate this cell's kernel. It MUST happen before
+    // anything reaches an adapter type.
+    //
+    // Leaving it out does not fail to build and does not fail to link. With
+    // LTO on, `install` being uncalled makes the crate's HOST provably null,
+    // so `host()` folds to an unconditional panic and every adapter function
+    // behind it is deleted as unreachable. The binary shrank by 19,184 bytes
+    // of `.text` and lost all thirteen kernel queue/semaphore symbols, and
+    // the only way to SEE that was to compare the two builds -- on the board
+    // it would have been a panic on the first driver call.
+    rusty_rtos_port_esp_radio::install(&HOST);
 
     // `main` runs below the workers so that blocking it hands them the CPU.
     let Some(main_task) = with_kernel(&mut |k: &mut K| k.create_task("main", 2).ok()) else {
@@ -533,7 +537,7 @@ pub fn boot() -> bool {
     if with_kernel(&mut |k: &mut K| k.start_scheduler().ok()).is_none() {
         return false;
     }
-    crate::adapter::register_main(main_task);
+    rusty_rtos_port_esp_radio::register_main(main_task);
     // Who the kernel thinks is running, and who `main` is. If these differ,
     // every block below parks the wrong task.
     let current = with_kernel(&mut |k: &mut K| Some(k.current())).unwrap_or_default();

@@ -27,7 +27,7 @@
 //! # How a STACKED task blocks on a STACKLESS kernel
 //!
 //! This is the join that looked impossible and is not. `Kernel::semaphore_take`
-//! answers `Wait::Blocked`, documented as *"leave the program counter where
+//! answers `Blocked::Blocked`, documented as *"leave the program counter where
 //! it is and make the same call again when the task next runs."* That is a
 //! **retry** protocol, and a retry protocol serves both shapes of task:
 //!
@@ -53,44 +53,49 @@ use esp_radio_rtos_driver::{SchedulerImplementation, ThreadPtr};
 
 use rusty_rtos_core::handle::{QueueHandle, TaskHandle};
 
-use crate::{host, Blocked};
 use crate::SLOT_CAPACITY as MAX_TASKS;
-
-/// The tick is 1 kHz, so one tick is 1,000 microseconds.
-const US_PER_TICK: u64 = 1_000;
+use crate::port::{Context, new_task_context};
+use crate::{Blocked, KernelOps, host, with_kernel};
 
 /// Microseconds to ticks, rounding **up**.
 ///
 /// Up, because a radio that asked to wait 1,500 µs and was woken at 1,000
 /// has been given a wrong answer, where one woken at 2,000 has merely been
-/// given a slow one. The rounding is a real fidelity limit of a 1 kHz tick
-/// and is recorded in the cell's README rather than hidden here.
+/// given a slow one. The rounding is a real fidelity limit of the tick rate,
+/// not of this function.
+///
+/// The rate comes from the host. It was a `const US_PER_TICK: u64 = 1_000`
+/// when this lived inside one firmware, which is precisely the kind of baked
+/// geometry that made the glue unconsumable: a consumer on a 100 Hz tick
+/// would have got timeouts ten times too short, silently, with every type
+/// checking out.
 fn ticks_from_us(us: u64) -> u64 {
-    us.div_ceil(US_PER_TICK)
+    let us_per_tick = 1_000_000 / u64::from(host().tick_hz().max(1));
+    us.div_ceil(us_per_tick.max(1))
 }
 
 /// A deadline in absolute microseconds turned into a relative tick count.
 fn ticks_until(deadline_us: Option<u64>) -> u64 {
     match deadline_us {
         None => u64::MAX,
-        Some(deadline) => ticks_from_us(deadline.saturating_sub(now_us())),
+        Some(deadline) => ticks_from_us(deadline.saturating_sub(host().now_us())),
     }
 }
 
 /// Drive a kernel call that may block until it completes or fails.
 ///
-/// See the module docs: `Wait::Blocked` means "call me again when this task
+/// See the module docs: `Blocked::Blocked` means "call me again when this task
 /// next runs", so a stacked task yields and calls again.
 fn block_on<F>(mut call: F) -> bool
 where
-    F: FnMut(&mut K) -> Option<Wait<()>>,
+    F: FnMut(&mut dyn KernelOps) -> Option<Blocked>,
 {
     loop {
         // The kernel lock is NEVER held across the yield. Taking it, making
         // one call and dropping it is what keeps the switch legal.
         match with_kernel(&mut call) {
-            Some(Wait::Ready(())) => return true,
-            Some(Wait::Blocked) => yield_and_switch(),
+            Some(Blocked::Completed) => return true,
+            Some(Blocked::Blocked) => host().yield_and_switch(),
             None => return false,
         }
     }
@@ -118,7 +123,7 @@ static mut SLOTS: [*mut TaskSlot; MAX_TASKS] = [core::ptr::null_mut(); MAX_TASKS
 
 /// Record a slot against its kernel index.
 fn register_slot(handle: TaskHandle, slot: *mut TaskSlot) {
-    let index = usize::from(handle.index());
+    let index = handle.index() as usize;
     // SAFETY: single core; every writer masks interrupts through
     // `with_kernel`, and `index` is below `MAX_TASKS` because the kernel
     // refuses to create more tasks than that.
@@ -134,7 +139,7 @@ fn register_slot(handle: TaskHandle, slot: *mut TaskSlot) {
 /// `None` for a kernel task with no slot — the idle and timer tasks, which
 /// this cell never gives stacks to because nothing ever switches to them.
 pub fn context_of(handle: TaskHandle) -> Option<*mut Context> {
-    let index = usize::from(handle.index());
+    let index = handle.index() as usize;
     // SAFETY: as `register_slot`.
     unsafe {
         let slot = *(&raw const SLOTS).cast::<*mut TaskSlot>().add(index);
@@ -184,7 +189,7 @@ pub fn handle_for(index: u32) -> Option<TaskHandle> {
 /// The blob's entry point is `extern "C" fn(*mut c_void)` and must not
 /// return; if it ever does, the task deletes itself rather than running off
 /// the end of a stack that has nothing beneath it.
-extern "C" fn task_entry(task_fn: usize, param: usize) {
+extern "C" fn task_entry(task_fn: usize, param: usize) -> ! {
     // SAFETY: `task_fn` is the pointer the radio handed `task_create`, whose
     // type the driver fixes as `extern "C" fn(*mut c_void)`.
     let entry: extern "C" fn(*mut c_void) = unsafe { core::mem::transmute(task_fn) };
@@ -201,22 +206,23 @@ pub struct Scheduler;
 
 impl SchedulerImplementation for Scheduler {
     fn initialized(&self) -> bool {
-        crate::kernel::started()
+        host().scheduler_started()
     }
 
     fn yield_task(&self) {
-        yield_and_switch();
+        host().yield_and_switch();
     }
 
     fn yield_task_from_isr(&self) {
         // Already in an interrupt: ask for the switch, and it happens on the
         // way out rather than re-entering the switcher from inside itself.
-        rusty_rtos_port_xtensa::yield_now();
+        crate::port::raise_switch();
     }
 
     fn current_task(&self) -> ThreadPtr {
-        let handle = with_kernel(&mut |k: &mut K| Some(k.current())).unwrap_or_default();
-        let index = usize::from(handle.index());
+        let handle =
+            with_kernel(&mut |k: &mut dyn KernelOps| Some(k.current())).unwrap_or_default();
+        let index = handle.index() as usize;
         // SAFETY: as `register_slot`.
         let slot = unsafe { *(&raw const SLOTS).cast::<*mut TaskSlot>().add(index) };
         NonNull::new(slot.cast::<()>()).unwrap_or(NonNull::dangling())
@@ -226,7 +232,7 @@ impl SchedulerImplementation for Scheduler {
         // One below the configured ceiling: the top priority belongs to the
         // timer daemon, and a radio task that outranked it would starve the
         // software timers the radio itself arms.
-        u32::from(crate::kernel::MAX_PRIORITIES) - 2
+        u32::from(host().max_priorities()) - 2
     }
 
     fn task_create(
@@ -251,7 +257,7 @@ impl SchedulerImplementation for Scheduler {
             return NonNull::dangling();
         }
 
-        let clamped = (priority as u8).min(crate::kernel::MAX_PRIORITIES.saturating_sub(2));
+        let clamped = (priority as u8).min(host().max_priorities().saturating_sub(2));
 
         // Everything that does not need a handle is done FIRST, so that
         // creating the task and registering its slot can happen under one
@@ -284,8 +290,8 @@ impl SchedulerImplementation for Scheduler {
             thread_semaphore: None,
         }));
 
-        let made = with_kernel(&mut |k: &mut K| {
-            let handle = k.create_task(name, clamped).ok()?;
+        let made = with_kernel(&mut |k: &mut dyn KernelOps| {
+            let handle = k.create_task(name, clamped)?;
             // SAFETY: `slot` was just leaked from a `Box` and nothing else
             // holds it yet.
             unsafe {
@@ -316,7 +322,7 @@ impl SchedulerImplementation for Scheduler {
         // SAFETY: every live `ThreadPtr` this adapter issued points at a
         // `TaskSlot` it leaked from a `Box`.
         let handle = unsafe { (*slot).handle };
-        let deleting_self = with_kernel(&mut |k: &mut K| {
+        let deleting_self = with_kernel(&mut |k: &mut dyn KernelOps| {
             let me = k.current();
             let _ = k.task_delete(Some(handle));
             Some(me == handle)
@@ -328,7 +334,7 @@ impl SchedulerImplementation for Scheduler {
             // below never returns, so the slot and its stack are left for
             // the next `task_create` to reuse the index. Freeing the stack
             // we are standing on is the one thing that must not happen here.
-            yield_and_switch();
+            host().yield_and_switch();
             return;
         }
         register_slot(handle, core::ptr::null_mut());
@@ -360,7 +366,7 @@ impl SchedulerImplementation for Scheduler {
         let slot = task.as_ptr().cast::<TaskSlot>();
         // SAFETY: the caller guarantees the pointer came from `task_create`.
         let handle = unsafe { (*slot).handle };
-        with_kernel(&mut |k: &mut K| k.task_priority_get(Some(handle)).ok().map(u32::from))
+        with_kernel(&mut |k: &mut dyn KernelOps| k.task_priority_get(Some(handle)).map(u32::from))
             .unwrap_or(0)
     }
 
@@ -368,8 +374,8 @@ impl SchedulerImplementation for Scheduler {
         let slot = task.as_ptr().cast::<TaskSlot>();
         // SAFETY: as `task_priority`.
         let handle = unsafe { (*slot).handle };
-        let clamped = (priority as u8).min(crate::kernel::MAX_PRIORITIES.saturating_sub(2));
-        with_kernel(&mut |k: &mut K| {
+        let clamped = (priority as u8).min(host().max_priorities().saturating_sub(2));
+        with_kernel(&mut |k: &mut dyn KernelOps| {
             let _ = k.set_priority(Some(handle), clamped);
             Some(())
         });
@@ -377,22 +383,22 @@ impl SchedulerImplementation for Scheduler {
 
     fn usleep(&self, us: u32) {
         let ticks = ticks_from_us(u64::from(us));
-        with_kernel(&mut |k: &mut K| {
+        with_kernel(&mut |k: &mut dyn KernelOps| {
             let _ = k.delay(ticks);
             Some(())
         });
-        yield_and_switch();
+        host().yield_and_switch();
     }
 
     fn usleep_until(&self, target: u64) {
-        let now = now_us();
+        let now = host().now_us();
         if target > now {
             self.usleep((target - now).min(u64::from(u32::MAX)) as u32);
         }
     }
 
     fn now(&self) -> u64 {
-        now_us()
+        host().now_us()
     }
 }
 
@@ -407,12 +413,12 @@ pub struct Semaphore;
 
 impl SemaphoreImplementation for Semaphore {
     fn create(kind: SemaphoreKind) -> SemaphorePtr {
-        let handle = with_kernel(&mut |k: &mut K| match kind {
-            SemaphoreKind::Counting { max, initial } => k
-                .semaphore_create_counting(max as usize, initial as usize)
-                .ok(),
-            SemaphoreKind::Mutex => k.mutex_create().ok(),
-            SemaphoreKind::RecursiveMutex => k.mutex_create_recursive().ok(),
+        let handle = with_kernel(&mut |k: &mut dyn KernelOps| match kind {
+            SemaphoreKind::Counting { max, initial } => {
+                k.semaphore_create_counting(max as usize, initial as usize)
+            }
+            SemaphoreKind::Mutex => k.mutex_create(),
+            SemaphoreKind::RecursiveMutex => k.mutex_create_recursive(),
         });
         let Some(handle) = handle else {
             return NonNull::dangling();
@@ -424,7 +430,7 @@ impl SemaphoreImplementation for Semaphore {
     unsafe fn delete(semaphore: SemaphorePtr) {
         // SAFETY: the caller guarantees this came from `create`.
         let owned = unsafe { Box::from_raw(semaphore.as_ptr().cast::<Sem>()) };
-        with_kernel(&mut |k: &mut K| {
+        with_kernel(&mut |k: &mut dyn KernelOps| {
             let _ = k.queue_delete(owned.handle);
             Some(())
         });
@@ -434,20 +440,20 @@ impl SemaphoreImplementation for Semaphore {
         let ticks = timeout_us.map_or(u64::MAX, |us| ticks_from_us(u64::from(us)));
         // SAFETY: as `delete`.
         let handle = unsafe { (*semaphore.as_ptr().cast::<Sem>()).handle };
-        block_on(move |k: &mut K| k.semaphore_take(handle, ticks).ok())
+        block_on(move |k: &mut dyn KernelOps| k.semaphore_take(handle, ticks))
     }
 
     unsafe fn take_with_deadline(semaphore: SemaphorePtr, deadline_instant: Option<u64>) -> bool {
         let ticks = ticks_until(deadline_instant);
         // SAFETY: as `delete`.
         let handle = unsafe { (*semaphore.as_ptr().cast::<Sem>()).handle };
-        block_on(move |k: &mut K| k.semaphore_take(handle, ticks).ok())
+        block_on(move |k: &mut dyn KernelOps| k.semaphore_take(handle, ticks))
     }
 
     unsafe fn give(semaphore: SemaphorePtr) -> bool {
         // SAFETY: as `delete`.
         let handle = unsafe { (*semaphore.as_ptr().cast::<Sem>()).handle };
-        block_on(move |k: &mut K| k.semaphore_give(handle).ok())
+        block_on(move |k: &mut dyn KernelOps| k.semaphore_give(handle))
     }
 
     unsafe fn try_give_from_isr(
@@ -456,11 +462,11 @@ impl SemaphoreImplementation for Semaphore {
     ) -> bool {
         // SAFETY: as `delete`.
         let handle = unsafe { (*semaphore.as_ptr().cast::<Sem>()).handle };
-        let woken = with_kernel(&mut |k: &mut K| k.semaphore_give_from_isr(handle).ok());
+        let woken = with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give_from_isr(handle));
         match woken {
             Some(w) => {
                 if let Some(flag) = higher_prio_task_waken {
-                    *flag = w == rusty_rtos_core::isr::Woken::YES;
+                    *flag = w;
                 }
                 true
             }
@@ -471,7 +477,8 @@ impl SemaphoreImplementation for Semaphore {
     unsafe fn current_count(semaphore: SemaphorePtr) -> u32 {
         // SAFETY: as `delete`.
         let handle = unsafe { (*semaphore.as_ptr().cast::<Sem>()).handle };
-        with_kernel(&mut |k: &mut K| k.semaphore_count(handle).ok().map(|c| c as u32)).unwrap_or(0)
+        with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_count(handle).map(|c| c as u32))
+            .unwrap_or(0)
     }
 
     unsafe fn try_take(semaphore: SemaphorePtr) -> bool {
@@ -479,8 +486,8 @@ impl SemaphoreImplementation for Semaphore {
         let handle = unsafe { (*semaphore.as_ptr().cast::<Sem>()).handle };
         // Zero ticks: the kernel answers `Ready` or fails, never `Blocked`.
         matches!(
-            with_kernel(&mut |k: &mut K| k.semaphore_take(handle, 0).ok()),
-            Some(Wait::Ready(()))
+            with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_take(handle, 0)),
+            Some(Blocked::Completed)
         )
     }
 
@@ -491,8 +498,8 @@ impl SemaphoreImplementation for Semaphore {
         // SAFETY: as `delete`.
         let handle = unsafe { (*semaphore.as_ptr().cast::<Sem>()).handle };
         matches!(
-            with_kernel(&mut |k: &mut K| k.semaphore_take(handle, 0).ok()),
-            Some(Wait::Ready(()))
+            with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_take(handle, 0)),
+            Some(Blocked::Completed)
         )
     }
 }
@@ -576,12 +583,10 @@ impl QueueImplementation for Queue {
         if storage.is_null() {
             return NonNull::dangling();
         }
-        let made = with_kernel(&mut |k: &mut K| {
-            let lock = k.mutex_create().ok()?;
-            let filled = k.semaphore_create_counting(capacity.max(1), 0).ok()?;
-            let empty = k
-                .semaphore_create_counting(capacity.max(1), capacity)
-                .ok()?;
+        let made = with_kernel(&mut |k: &mut dyn KernelOps| {
+            let lock = k.mutex_create()?;
+            let filled = k.semaphore_create_counting(capacity.max(1), 0)?;
+            let empty = k.semaphore_create_counting(capacity.max(1), capacity)?;
             Some((lock, filled, empty))
         });
         let Some((lock, filled, empty)) = made else {
@@ -607,7 +612,7 @@ impl QueueImplementation for Queue {
     unsafe fn delete(queue: QueuePtr) {
         // SAFETY: the caller guarantees this came from `create`.
         let owned = unsafe { Box::from_raw(queue.as_ptr().cast::<Q>()) };
-        with_kernel(&mut |k: &mut K| {
+        with_kernel(&mut |k: &mut dyn KernelOps| {
             let _ = k.queue_delete(owned.lock);
             let _ = k.queue_delete(owned.filled);
             let _ = k.queue_delete(owned.empty);
@@ -661,9 +666,9 @@ impl QueueImplementation for Queue {
             }
             Queue::push(q, item, false);
             let handle = (*q).filled;
-            let woken = with_kernel(&mut |k: &mut K| k.semaphore_give_from_isr(handle).ok());
+            let woken = with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give_from_isr(handle));
             if let (Some(w), Some(flag)) = (woken, higher_prio_task_waken) {
-                *flag = w == rusty_rtos_core::isr::Woken::YES;
+                *flag = w;
             }
             true
         }
@@ -697,7 +702,7 @@ impl QueueImplementation for Queue {
             }
             Queue::pop(q, item);
             let handle = (*q).empty;
-            let _ = with_kernel(&mut |k: &mut K| k.semaphore_give_from_isr(handle).ok());
+            let _ = with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give_from_isr(handle));
             true
         }
     }
@@ -716,7 +721,7 @@ impl QueueImplementation for Queue {
             (*q).head = ((*q).head + 1) % (*q).capacity;
             (*q).len -= 1;
             let handle = (*q).empty;
-            let _ = with_kernel(&mut |k: &mut K| k.semaphore_give(handle).ok());
+            let _ = with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give(handle));
         }
     }
 
@@ -735,16 +740,16 @@ unsafe fn send(queue: QueuePtr, item: *const u8, ticks: u64, front: bool) -> boo
     let q = queue.as_ptr().cast::<Q>();
     // SAFETY: the caller's contract.
     let (empty, filled, lock) = unsafe { ((*q).empty, (*q).filled, (*q).lock) };
-    if !block_on(move |k: &mut K| k.semaphore_take(empty, ticks).ok()) {
+    if !block_on(move |k: &mut dyn KernelOps| k.semaphore_take(empty, ticks)) {
         return false;
     }
-    if !block_on(move |k: &mut K| k.semaphore_take(lock, u64::MAX).ok()) {
+    if !block_on(move |k: &mut dyn KernelOps| k.semaphore_take(lock, u64::MAX)) {
         return false;
     }
     // SAFETY: the lock is held, so the ring is ours.
     unsafe { Queue::push(q, item, front) };
-    block_on(move |k: &mut K| k.semaphore_give(lock).ok());
-    block_on(move |k: &mut K| k.semaphore_give(filled).ok());
+    block_on(move |k: &mut dyn KernelOps| k.semaphore_give(lock));
+    block_on(move |k: &mut dyn KernelOps| k.semaphore_give(filled));
     true
 }
 
@@ -756,16 +761,16 @@ unsafe fn receive_inner(queue: QueuePtr, item: *mut u8, ticks: u64) -> bool {
     let q = queue.as_ptr().cast::<Q>();
     // SAFETY: the caller's contract.
     let (empty, filled, lock) = unsafe { ((*q).empty, (*q).filled, (*q).lock) };
-    if !block_on(move |k: &mut K| k.semaphore_take(filled, ticks).ok()) {
+    if !block_on(move |k: &mut dyn KernelOps| k.semaphore_take(filled, ticks)) {
         return false;
     }
-    if !block_on(move |k: &mut K| k.semaphore_take(lock, u64::MAX).ok()) {
+    if !block_on(move |k: &mut dyn KernelOps| k.semaphore_take(lock, u64::MAX)) {
         return false;
     }
     // SAFETY: the lock is held.
     unsafe { Queue::pop(q, item) };
-    block_on(move |k: &mut K| k.semaphore_give(lock).ok());
-    block_on(move |k: &mut K| k.semaphore_give(empty).ok());
+    block_on(move |k: &mut dyn KernelOps| k.semaphore_give(lock));
+    block_on(move |k: &mut dyn KernelOps| k.semaphore_give(empty));
     true
 }
 
@@ -784,7 +789,8 @@ pub struct WaitQueue;
 
 impl WaitQueueImplementation for WaitQueue {
     fn create() -> WaitQueuePtr {
-        let Some(sem) = with_kernel(&mut |k: &mut K| k.semaphore_create_counting(64, 0).ok())
+        let Some(sem) =
+            with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_create_counting(64, 0))
         else {
             return NonNull::dangling();
         };
@@ -795,7 +801,7 @@ impl WaitQueueImplementation for WaitQueue {
     unsafe fn delete(queue: WaitQueuePtr) {
         // SAFETY: the caller guarantees this came from `create`.
         let owned = unsafe { Box::from_raw(queue.as_ptr().cast::<WQ>()) };
-        with_kernel(&mut |k: &mut K| {
+        with_kernel(&mut |k: &mut dyn KernelOps| {
             let _ = k.queue_delete(owned.sem);
             Some(())
         });
@@ -809,7 +815,7 @@ impl WaitQueueImplementation for WaitQueue {
             (*wq).sem
         };
         let ticks = ticks_until(deadline_instant);
-        block_on(move |k: &mut K| k.semaphore_take(sem, ticks).ok());
+        block_on(move |k: &mut dyn KernelOps| k.semaphore_take(sem, ticks));
         // SAFETY: as above.
         unsafe {
             (*wq).waiters = (*wq).waiters.saturating_sub(1);
@@ -823,7 +829,7 @@ impl WaitQueueImplementation for WaitQueue {
         // Release every current waiter: this is a condition variable's
         // broadcast, not a semaphore's signal.
         for _ in 0..waiters {
-            block_on(move |k: &mut K| k.semaphore_give(sem).ok());
+            block_on(move |k: &mut dyn KernelOps| k.semaphore_give(sem));
         }
     }
 
@@ -833,8 +839,10 @@ impl WaitQueueImplementation for WaitQueue {
         let (sem, waiters) = unsafe { ((*wq).sem, (*wq).waiters) };
         let mut any = false;
         for _ in 0..waiters {
-            if let Some(w) = with_kernel(&mut |k: &mut K| k.semaphore_give_from_isr(sem).ok()) {
-                any |= w == rusty_rtos_core::isr::Woken::YES;
+            if let Some(w) =
+                with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give_from_isr(sem))
+            {
+                any |= w;
             }
         }
         if let Some(flag) = higher_prio_task_waken {
@@ -860,7 +868,7 @@ pub struct Timer;
 
 impl TimerImplementation for Timer {
     fn create(function: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> TimerPtr {
-        let index = crate::kernel::remember_timer(function, data);
+        let index = crate::timers::remember(function, data);
         if index == usize::MAX {
             return NonNull::dangling();
         }
@@ -871,24 +879,24 @@ impl TimerImplementation for Timer {
     unsafe fn delete(timer: TimerPtr) {
         // SAFETY: the caller guarantees this came from `create`.
         let owned = unsafe { Box::from_raw(timer.as_ptr().cast::<T>()) };
-        crate::kernel::forget_timer(owned.index);
+        crate::timers::forget(owned.index);
     }
 
     unsafe fn arm(timer: TimerPtr, timeout: u64, periodic: bool) {
         // SAFETY: a live pointer from `create`.
         let index = unsafe { (*timer.as_ptr().cast::<T>()).index };
-        crate::kernel::arm_timer(index, timeout, periodic);
+        crate::timers::arm(index, timeout, periodic);
     }
 
     unsafe fn is_active(timer: TimerPtr) -> bool {
         // SAFETY: a live pointer from `create`.
         let index = unsafe { (*timer.as_ptr().cast::<T>()).index };
-        crate::kernel::timer_active(index)
+        crate::timers::active(index)
     }
 
     unsafe fn disarm(timer: TimerPtr) {
         // SAFETY: a live pointer from `create`.
         let index = unsafe { (*timer.as_ptr().cast::<T>()).index };
-        crate::kernel::disarm_timer(index);
+        crate::timers::disarm(index);
     }
 }

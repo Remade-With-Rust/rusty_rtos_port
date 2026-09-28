@@ -104,6 +104,7 @@ type K = Kernel<
     8,
     TIMERS,
     GROUPS,
+    { <HostConfig as ::rusty_rtos_core::config::Config>::TIMER_QUEUE_LENGTH },
 >;
 
 /// The kernel, reached from every task thread and from the tick thread.

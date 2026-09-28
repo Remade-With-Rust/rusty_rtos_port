@@ -542,10 +542,17 @@ impl RiscvPort {
     }
 }
 
-/// Clear `mstatus.MIE`, answering whether it had been set.
+/// Clear `mstatus.MIE`, answering the OLD value of the bit -- `8` if it had been
+/// set, `0` if not.
+///
+/// The raw bit rather than a `bool`, because both callers only ever test it
+/// against zero and the only place it is stored is a `u32`. As a `bool` the
+/// round trip cost an extraction: `csrrci` leaves the bit in position 3, so
+/// `old & 8 != 0` followed by `u32::from` compiled to `slli 0x1c` + `srli 0x1f`.
+/// Masking in place is one `andi 8`.
 #[cfg(target_arch = "riscv32")]
 #[inline(always)]
-fn mask_interrupts() -> bool {
+fn mask_interrupts() -> u32 {
     let old: usize;
     // SAFETY: clears the global interrupt-enable bit and reports its old
     // value in one instruction; touches no memory.
@@ -553,7 +560,7 @@ fn mask_interrupts() -> bool {
     unsafe {
         core::arch::asm!("csrrci {0}, mstatus, 8", out(reg) old, options(nomem, nostack));
     }
-    old & 8 != 0
+    (old & 8) as u32
 }
 
 /// Set `mstatus.MIE`.
@@ -569,8 +576,8 @@ fn unmask_interrupts() {
 
 #[cfg(not(target_arch = "riscv32"))]
 #[inline(always)]
-fn mask_interrupts() -> bool {
-    false
+fn mask_interrupts() -> u32 {
+    0
 }
 
 #[cfg(not(target_arch = "riscv32"))]
@@ -616,28 +623,49 @@ impl Port for RiscvPort {
     /// taken. See the Xtensa port for what happens when it does.
     const COMMITS_SWITCH: bool = true;
 
+    #[inline]
     fn yield_now(&self) {
         // No counter here: `Kernel::port_yield` calls `count_yield` just
         // before this, and counting in both places doubles every yield.
         raise_switch();
     }
 
+    #[inline]
     fn yield_from_isr(&self, woken: Woken) {
         if woken == Woken::YES {
             raise_switch();
         }
     }
 
+    /// Out of line on purpose, and C's is a MACRO -- the asymmetry is priced.
+    ///
+    /// Our arm makes **111 calls** to this pair; the C arm has no
+    /// `vTaskEnterCritical` symbol at all and 237 INLINE `csr` ops, because
+    /// `portENTER_CRITICAL()` is `csrc mstatus, 8` plus a plain non-atomic
+    /// `xCriticalNesting++`. Ours additionally saves and restores the previous
+    /// interrupt state, which C never does (C unconditionally re-enables).
+    ///
+    /// `#[inline]` on the pair was measured on 2026-09-25: **+1,406 B** as
+    /// written, and **+2,164 B** even cut down to C's exact semantics. `mv`
+    /// falls 782 -> 592 and 566 respectively, so the call really is costing
+    /// register pressure -- and the duplicated body costs far more. One body
+    /// plus 111 `jal` beats 111 copies. C can afford to inline because its
+    /// primitive is four instructions and ours is nine.
     fn enter_critical(&self) {
         let was = mask_interrupts();
         // Only the OUTERMOST section's state is kept: an inner mask reports
         // interrupts already off, and restoring that on the way out would
         // leave them off for good.
         if self.nesting.fetch_add(1, Ordering::Relaxed) == 0 {
-            self.was_enabled.store(u32::from(was), Ordering::Relaxed);
+            self.was_enabled.store(was, Ordering::Relaxed);
         }
     }
 
+    /// See [`RiscvPort::enter_critical`] for why this is out of line.
+    ///
+    /// The `exits` counter is read only by a trace sink, and removing it
+    /// entirely measured **8 B** -- so it is not worth gating: out of line, the
+    /// body costs ONCE, not once per call site.
     fn exit_critical(&self) {
         let n = self.nesting.load(Ordering::Relaxed).saturating_sub(1);
         self.nesting.store(n, Ordering::Relaxed);
@@ -649,16 +677,19 @@ impl Port for RiscvPort {
         }
     }
 
+    #[inline]
     fn set_interrupt_mask_from_isr(&self) -> u32 {
-        u32::from(mask_interrupts())
+        mask_interrupts()
     }
 
+    #[inline]
     fn clear_interrupt_mask_from_isr(&self, saved: u32) {
         if saved != 0 {
             unmask_interrupts();
         }
     }
 
+    #[inline]
     fn in_isr(&self) -> bool {
         // RISC-V has no equivalent of ARM's `IPSR`: a hart in a trap looks
         // like a hart with interrupts masked. This is therefore weaker than
@@ -669,18 +700,26 @@ impl Port for RiscvPort {
         self.nesting.load(Ordering::Relaxed) != 0
     }
 
+    #[inline]
     fn count_tick(&self) {
         self.note_tick();
     }
 
+    #[inline]
     fn count_yield(&self) {
         self.yields.fetch_add(1, Ordering::Relaxed);
     }
 
+    // Three instructions (`lw`, a high-word zero, `ret`) behind a call the
+    // kernel makes from 45 sites. The profile is `lto = false`, so without
+    // this attribute the body is not even a CANDIDATE for cross-crate
+    // inlining, and each site pays `mv a0, sN` + `jal` to run it.
+    #[inline]
     fn exits(&self) -> u64 {
         u64::from(self.exits.load(Ordering::Relaxed))
     }
 
+    #[inline]
     fn idle(&self) {
         idle_wait();
     }

@@ -1208,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "rusty_rtos_alloc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rusty_alloc",
  "rusty_alloc-api",
@@ -1216,18 +1216,27 @@ dependencies = [
 
 [[package]]
 name = "rusty_rtos_core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "rusty_rtos_kernel-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rusty_rtos_core",
 ]
 
 [[package]]
+name = "rusty_rtos_port-esp-radio"
+version = "0.2.0"
+dependencies = [
+ "esp-radio-rtos-driver",
+ "rusty_rtos_core",
+ "rusty_rtos_port-xtensa",
+]
+
+[[package]]
 name = "rusty_rtos_port-xtensa"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rusty_rtos_core",
  "xtensa-lx 0.12.0",
@@ -1623,6 +1632,7 @@ dependencies = [
  "rusty_rtos_alloc",
  "rusty_rtos_core",
  "rusty_rtos_kernel-core",
+ "rusty_rtos_port-esp-radio",
  "rusty_rtos_port-xtensa",
 ]
 

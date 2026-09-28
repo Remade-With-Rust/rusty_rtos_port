@@ -107,6 +107,7 @@ type K = Kernel<
     8,
     TIMERS,
     GROUPS,
+    { <M3Config as ::rusty_rtos_core::config::Config>::TIMER_QUEUE_LENGTH },
 >;
 
 /// The kernel, reachable from a task and from `PendSV`.

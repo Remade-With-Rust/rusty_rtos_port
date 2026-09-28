@@ -556,6 +556,7 @@ type K = Kernel<
     8,
     TIMERS,
     GROUPS,
+    { <CellConfig as ::rusty_rtos_core::config::Config>::TIMER_QUEUE_LENGTH },
 >;
 
 struct KernelCell(UnsafeCell<Option<K>>);

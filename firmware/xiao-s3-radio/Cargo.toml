@@ -10,6 +10,16 @@ license = "MIT OR Apache-2.0"
 rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
 rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
 rusty_rtos_port-xtensa = { path = "../../crates/rusty_rtos_port-xtensa", default-features = false }
+# The driver glue. It USED to be `src/adapter.rs` in this directory, and
+# lifting it into a crate is Janus's ask in `docs/plans/janus-rtos.md` 5b:
+# a firmware directory is not consumable, so the mesh node would have had to
+# copy it and the two copies would have drifted. This cell is now the crate's
+# first consumer rather than its owner.
+rusty_rtos_port-esp-radio = { path = "../../crates/rusty_rtos_port-esp-radio", default-features = false, features = [
+    "xtensa",
+    "ipc-implementations",
+    "esp32s3",
+] }
 # The family's allocator: the adapter must allocate, because the driver
 # hands out pointers and takes runtime sizes.
 rusty_rtos_alloc = { path = "../../../rusty_rtos_core/crates/rusty_rtos_alloc", default-features = false, features = [
@@ -70,3 +80,17 @@ panic = "abort"
 overflow-checks = false
 
 [workspace]
+
+# `rusty_rtos_port-esp-radio` names `rusty_rtos_port-xtensa` BY VERSION, as a
+# published crate must. This cell names it BY PATH. Without this row cargo
+# resolves BOTH -- `cargo tree -d` shows two `rusty_rtos_port-xtensa v0.2.0`,
+# one local and one from the registry -- so the adapter would be built against
+# the PUBLISHED port while the cell runs the local one.
+#
+# It type-checks today only by luck: `Context` is re-exported from
+# `xtensa-lx-rt`, a `links` crate cargo keeps single, so the two copies hand
+# back the same type. Neither port has a `static`, so nothing is duplicated
+# that must be unique -- and the day one gains a switch-request flag, two
+# copies would be two flags and the failure would appear on silicon only.
+[patch.crates-io]
+rusty_rtos_port-xtensa = { path = "../../crates/rusty_rtos_port-xtensa" }

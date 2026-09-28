@@ -11,8 +11,10 @@ the five [`esp-radio-rtos-driver`](https://crates.io/crates/esp-radio-rtos-drive
 implementations — scheduler, semaphores, queues, timers, wait queues — as a
 crate rather than glue inside one firmware.
 
-**Status: the seam is landed; the adapter body is not yet wired.** See
-*What works today* below, which is the honest line and not the hopeful one.
+**Status: complete and consumed.** All five implementations are wired and the
+`xiao-s3-radio` cell now depends on this crate instead of carrying its own
+copy. It has **not been re-run on silicon since the extraction** — see
+*What works today*, which is the honest line and not the hopeful one.
 
 ## Why it exists
 
@@ -33,20 +35,26 @@ Two copies of a driver adapter that drift is the failure this avoids.
 
 | | |
 |---|---|
-| the **seam** — `RadioHost`, `KernelOps`, `Blocked`, `install`, `host` | ✅ landed, compiles for `riscv32imac` and `riscv32imafc` |
-| architecture selection — `Context`, `new_task_context`, `Trampoline` | ✅ feature-gated `xtensa` / `riscv` |
-| the **adapter body** (the five `impl`s) | ⏳ present as `src/adapter.rs`, **not compiled yet** |
+| the **seam** — `RadioHost`, `KernelOps`, `Blocked`, `install`, `host` | ✅ landed |
+| architecture selection — `Context`, `new_task_context`, `Trampoline`, `raise_switch` | ✅ feature-gated `xtensa` / `riscv` |
+| the **adapter body** — `Scheduler`, `Semaphore`, `Queue`, `Timer`, `WaitQueue` | ✅ wired, clippy-clean on both arms |
+| the **timer table** — `service_timers` | ✅ moved into the crate; the consumer must call it |
+| **re-run on silicon** | ❌ not since the extraction — the cell passed on 2026-09-11 as firmware-local glue |
 
-A consumer can write their `RadioHost` against the seam now; they cannot run
-`esp-radio` on it until the adapter is wired.
+Built and clippy-clean for `xtensa-esp32s3-none-elf` and
+`riscv32imac-unknown-none-elf`, and for a default-feature build with no
+architecture at all. The `xiao-s3-radio` cell links against it.
 
-**What is left, exactly** — 16 call sites in 895 lines: 34 `K` →
-`dyn KernelOps`, 21 `with_kernel`, 9 `crate::kernel::`, 5 `Wait` →
-`Blocked`, 4 `yield_and_switch`, 3 `now_us`, 3 `Context`. Eight of the 16 are
-multi-line closures that returned a value, and the seam cannot return one
-generically through a `dyn`, so each is a semantic edit rather than a
-substitution — in glue that currently passes on silicon. It is being done
-deliberately for that reason.
+**What the extraction cost, measured.** Same cell, before and after, same
+toolchain: `.text` +3,188 bytes for the `dyn` indirection through the seam,
+`.rodata` +596 for the `host()` panic strings, and `.bss` +68 — which is an
+exact identity rather than a number to shrug at: 16 extra slot pointers
+(`SLOT_CAPACITY` is 32, the cell has 16 tasks) at 4 bytes, plus the 4-byte
+host pointer.
+
+**What it has NOT been shown to do.** The cell passed on hardware before the
+extraction and has not been flashed since. A refactor of glue that passed on
+silicon is not proved by a build.
 
 ## The design, and the one decision worth arguing about
 
@@ -73,9 +81,59 @@ rusty_rtos_port-esp-radio = { version = "0.2", features = ["riscv", "esp32c6", "
 ```
 
 Exactly one of `xtensa` or `riscv` — a build has one stack layout. With
-neither, the architecture surface is simply absent and the seam still
-compiles, so `cargo check --workspace` works on a crate nobody has configured
-yet.
+neither, the adapter and the architecture surface are simply absent and the
+rest still compiles, so `cargo check --workspace` works on a crate nobody has
+configured yet. The cost is named where it is taken: a default-feature check
+does **not** compile the adapter, so both arms are built explicitly.
+
+Then implement the host. The kernel has to be wrapped, because the orphan rule
+forbids `impl KernelOps for Kernel<..>` — neither type is yours:
+
+```rust,ignore
+struct Ops<'a>(&'a mut MyKernel);
+
+impl rusty_rtos_port_esp_radio::KernelOps for Ops<'_> {
+    fn current(&mut self) -> TaskHandle { self.0.current() }
+    // ... thirteen more forwards, each `Result` flattened with `.ok()`
+}
+
+struct Host;
+static HOST: Host = Host;
+
+impl rusty_rtos_port_esp_radio::RadioHost for Host {
+    fn max_tasks(&self) -> usize { MAX_TASKS }
+    fn max_priorities(&self) -> u8 { MAX_PRIORITIES }
+    fn tick_hz(&self) -> u32 { 1_000 }
+    fn scheduler_started(&self) -> bool { started() }
+    fn enter_critical(&self) -> u32 { mask() }
+    fn exit_critical(&self, t: u32) { unmask(t) }
+    fn now_us(&self) -> u64 { /* a real microsecond clock */ }
+    fn yield_and_switch(&self) { /* raise the switching interrupt */ }
+
+    fn with_kernel(&self, f: &mut dyn FnMut(&mut dyn KernelOps)) {
+        my_with_kernel(&mut |k| { f(&mut Ops(k)); Some(()) });
+    }
+}
+```
+
+Then **call `install(&HOST)` before anything touches an adapter type**, and
+call `service_timers()` from a task of your own — nothing here has a thread.
+
+### ★ Two ways to wire this that build clean and do nothing
+
+Both are silent, and neither is a type error:
+
+- **Forgetting `install`.** With LTO on, an uncalled `install` makes the host
+  pointer provably null, `host()` folds to an unconditional panic, and the
+  linker drops every adapter function behind it. Measured on the cell:
+  `.text` fell 50,449 → 31,265 bytes and all thirteen kernel queue and
+  semaphore symbols vanished, with a clean build and a clean clippy. On the
+  board it is a panic on the first driver call.
+- **Forgetting `service_timers`.** The table never fires, so the radio's
+  retransmits and scan timeouts simply never happen — which looks like a dead
+  radio, not a missing call.
+
+If the adapter seems inert, check those two before reading any of it.
 
 ## Portability
 

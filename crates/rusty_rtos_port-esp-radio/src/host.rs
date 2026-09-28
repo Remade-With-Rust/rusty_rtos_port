@@ -32,14 +32,18 @@
 //! implementation types stay concrete and the kernel arrives through a host
 //! installed once at startup.
 //!
-//! # Why the closure returns nothing
+//! # Why the TRAIT method returns nothing, and the free function does
 //!
-//! A `dyn` trait cannot have a generic method, so `with_kernel` cannot be
-//! generic over a return type the way the firmware's free function was.
-//! Closures capture instead: write the answer into a local and read it after.
-//! That is the one place this seam is less pleasant than what it replaced,
-//! and it buys object safety, which is what makes a single installed host
-//! possible at all.
+//! A `dyn` trait cannot have a generic method, so [`RadioHost::with_kernel`]
+//! cannot be generic over a return type the way the firmware's free function
+//! was. It writes through a capture instead.
+//!
+//! That would have made every one of the adapter's twenty-one call sites a
+//! three-line block, so it is confined to one place:
+//! [`crate::with_kernel`] is the generic form built on top, with the SAME
+//! signature the firmware's had — `&mut dyn FnMut(&mut _) -> Option<R>`
+//! answering `Option<R>`. A host implements the object-safe method; the
+//! adapter calls the generic one and reads as an expression again.
 
 use rusty_rtos_core::handle::{QueueHandle, TaskHandle};
 
@@ -129,6 +133,44 @@ pub trait RadioHost: Sync + 'static {
     /// The largest number of tasks the kernel can hold. Checked against
     /// [`SLOT_CAPACITY`](crate::SLOT_CAPACITY) when the host is installed.
     fn max_tasks(&self) -> usize;
+
+    /// `configMAX_PRIORITIES`. The adapter clamps every priority the radio
+    /// asks for to `max_priorities - 2`, leaving the top band for the
+    /// kernel's own timer daemon, exactly as the C configuration does.
+    fn max_priorities(&self) -> u8;
+
+    /// Whether `start_scheduler` has run. `SchedulerImplementation::initialized`.
+    ///
+    /// The driver asks before it does anything, and a host that answers
+    /// `true` too early gets kernel calls against a scheduler that has not
+    /// chosen a first task.
+    fn scheduler_started(&self) -> bool;
+
+    /// Mask interrupts and return whatever [`exit_critical`](Self::exit_critical)
+    /// needs to restore them.
+    ///
+    /// This is NOT the kernel lock. [`with_kernel`](Self::with_kernel) takes
+    /// that; this one guards the crate's own timer table, which holds no
+    /// kernel state and must still be safe against the ISR that fires a
+    /// timer. A host whose `with_kernel` already masks may use the same two
+    /// primitives for both.
+    fn enter_critical(&self) -> u32;
+
+    /// Undo one [`enter_critical`](Self::enter_critical), with its token.
+    ///
+    /// Called exactly once per `enter_critical`, in reverse order. The crate
+    /// pairs them inside a guard so a caller cannot get this wrong; the
+    /// obligation is on a host not to interpret the token as anything but
+    /// its own.
+    fn exit_critical(&self, token: u32);
+
+    /// `configTICK_RATE_HZ`, used to turn the driver's microsecond timeouts
+    /// into the kernel's ticks.
+    ///
+    /// It must be the rate the kernel actually counts at. Reporting a rate
+    /// the tick interrupt does not run at makes every radio timeout wrong by
+    /// that ratio, and nothing else in the system will notice.
+    fn tick_hz(&self) -> u32;
 
     /// A monotonic microsecond clock. The driver uses it for timeouts; it
     /// need not be the tick.

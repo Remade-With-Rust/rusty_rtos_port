@@ -27,10 +27,10 @@ compile_error!(
 // adapter types are gated on the same features, so the registration macros
 // fail on a missing type with the architecture named in this module's docs.
 
-#[cfg(feature = "xtensa")]
-pub use rusty_rtos_port_xtensa::Context;
 #[cfg(feature = "riscv")]
 pub use rusty_rtos_port_riscv::Context;
+#[cfg(feature = "xtensa")]
+pub use rusty_rtos_port_xtensa::Context;
 
 /// The entry trampoline a fresh task is built around.
 ///
@@ -79,4 +79,28 @@ pub unsafe fn new_task_context(
     let wrapper: extern "C" fn(usize, usize) = unsafe { core::mem::transmute(wrapper) };
     // SAFETY: forwarded unchanged; the caller carries the port's contract.
     unsafe { rusty_rtos_port_xtensa::new_task_context(wrapper, task_fn, param, stack_top) }
+}
+
+/// `portYIELD_FROM_ISR()`: ask for a switch on the way out of an interrupt.
+///
+/// It does not switch, it *pends*. The switch happens when the switching
+/// interrupt is taken, which is the only context that saves machine state —
+/// so calling it from inside another interrupt is correct, and calling
+/// [`RadioHost::yield_and_switch`](crate::RadioHost::yield_and_switch) from
+/// there would not be.
+///
+/// The two ports name this differently — `-xtensa` says `yield_now`,
+/// `-riscv` says `raise_switch` — and reconciling that is this module's job,
+/// exactly as it is for [`Trampoline`]'s return type.
+#[cfg(feature = "xtensa")]
+#[inline]
+pub fn raise_switch() {
+    rusty_rtos_port_xtensa::yield_now();
+}
+
+/// As the `xtensa` one; see its documentation.
+#[cfg(feature = "riscv")]
+#[inline]
+pub fn raise_switch() {
+    rusty_rtos_port_riscv::raise_switch();
 }
