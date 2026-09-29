@@ -270,7 +270,26 @@ impl Port for SimPort {
             }
             // The tail of a call the scheduler abandoned: the C port's
             // thread has not run this yet, so it is not sim time yet.
-            TALLIES => self.unwound.set(self.unwound.get().saturating_add(1)),
+            TALLIES => {
+                // `wrapping_add`, not `saturating_add`, for exactly the reason
+                // `enter_critical` gives for `nesting`: the guard was never real,
+                // and it cost two instructions where none will do. Saturating
+                // emits `mov $0xffffffff` and a `cmovne` beside the increment --
+                // visible in `port_yield`, which takes THIS arm on 22,196 of its
+                // 22,627 GenQTest calls, because a yield unwinds the frame.
+                //
+                // It cannot fire. `begin_unwind` zeroes this and `end_unwind`
+                // reads-and-zeroes it, so it counts the critical-section exits of
+                // ONE abandoned frame -- a handful, never four billion. The
+                // `debug_assert` below is what keeps that true rather than merely
+                // believed.
+                let n = self.unwound.get();
+                debug_assert!(
+                    n < u32::MAX,
+                    "the unwound tally is per-frame and cannot reach u32::MAX"
+                );
+                self.unwound.set(n.wrapping_add(1));
+            }
             _ => {}
         }
     }
