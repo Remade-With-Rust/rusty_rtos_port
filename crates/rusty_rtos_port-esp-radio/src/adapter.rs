@@ -55,7 +55,7 @@ use rusty_rtos_core::handle::{QueueHandle, TaskHandle};
 
 use crate::SLOT_CAPACITY as MAX_TASKS;
 use crate::port::{Context, new_task_context};
-use crate::{Blocked, KernelOps, host, with_kernel};
+use crate::{Blocked, Critical, KernelOps, host, with_kernel};
 
 /// Microseconds to ticks, rounding **up**.
 ///
@@ -114,6 +114,25 @@ where
 #[inline(never)]
 fn exhausted(what: &'static str) -> ! {
     panic!("esp-radio adapter: could not create {what}, and the radio driver has no failure path")
+}
+
+// ----------------------------------------------------------- diagnostics --
+
+/// What the radio's INTERRUPT side asked of the adapter, and how much of it
+/// was refused. Relaxed counters, read only by a firmware's report: the
+/// interrupt half of the seam is the half a task-driven test never reaches,
+/// and "the radio transmits but never receives" is exactly the symptom of it
+/// failing quietly.
+pub mod isr_stats {
+    use core::sync::atomic::AtomicU32;
+    /// `try_send_to_back_from_isr` calls, and how many found the queue full.
+    pub static QUEUE_SENDS: AtomicU32 = AtomicU32::new(0);
+    pub static QUEUE_FULL: AtomicU32 = AtomicU32::new(0);
+    /// `try_give_from_isr` calls, and how many the kernel refused.
+    pub static SEM_GIVES: AtomicU32 = AtomicU32::new(0);
+    pub static SEM_REFUSED: AtomicU32 = AtomicU32::new(0);
+    /// `yield_task_from_isr` calls.
+    pub static YIELDS: AtomicU32 = AtomicU32::new(0);
 }
 
 // ----------------------------------------------------------------- tasks --
@@ -182,6 +201,47 @@ pub fn register_main(handle: TaskHandle) {
     register_slot(handle, slot);
 }
 
+/// Give a task the KERNEL created — `IDLE` or `Tmr Svc` — a stack and a body.
+///
+/// [`Kernel::start_scheduler`] creates both unconditionally, and the
+/// scheduler chooses them like any other task. Without a context the
+/// switching interrupt can only decline that choice after the kernel has
+/// already committed it, so `current` names a task the CPU is not running —
+/// which is harmless while some radio task is always ready, and the first
+/// thing to break once the radio blocks every task it owns.
+///
+/// `body` must never return.
+///
+/// [`Kernel::start_scheduler`]: https://docs.rs/rusty_rtos_kernel-core
+pub fn register_kernel_task(
+    handle: TaskHandle,
+    body: extern "C" fn(*mut c_void),
+    stack_size: usize,
+) {
+    let size = stack_size.max(1024);
+    let layout = match Layout::from_size_align(size, 16) {
+        Ok(l) => l,
+        Err(_) => exhausted("a kernel task's stack (its size has no valid layout)"),
+    };
+    // SAFETY: a non-zero layout; the pointer is checked below.
+    let stack = unsafe { alloc(layout) };
+    if stack.is_null() {
+        exhausted("a kernel task's stack (out of memory)");
+    }
+    // SAFETY: the stack is `size` bytes at `stack`; it is never freed, because
+    // the kernel never deletes its own tasks.
+    let context =
+        unsafe { new_task_context(task_entry, body as *const () as usize, 0, stack.add(size)) };
+    let slot = Box::into_raw(Box::new(TaskSlot {
+        context,
+        handle,
+        stack,
+        layout,
+        thread_semaphore: None,
+    }));
+    register_slot(handle, slot);
+}
+
 /// The handle for a task index, if this cell gave that index a context.
 pub fn handle_for(index: u32) -> Option<TaskHandle> {
     let index = index as usize;
@@ -229,6 +289,7 @@ impl SchedulerImplementation for Scheduler {
     }
 
     fn yield_task_from_isr(&self) {
+        isr_stats::YIELDS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         // Already in an interrupt: ask for the switch, and it happens on the
         // way out rather than re-entering the switcher from inside itself.
         crate::port::raise_switch();
@@ -478,6 +539,10 @@ impl SemaphoreImplementation for Semaphore {
         // SAFETY: as `delete`.
         let handle = unsafe { (*semaphore.as_ptr().cast::<Sem>()).handle };
         let woken = with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give_from_isr(handle));
+        isr_stats::SEM_GIVES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if woken.is_none() {
+            isr_stats::SEM_REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
         match woken {
             Some(w) => {
                 if let Some(flag) = higher_prio_task_waken {
@@ -524,13 +589,25 @@ impl SemaphoreImplementation for Semaphore {
 /// A bounded buffer with the payload in a heap ring and the blocking in two
 /// counting semaphores. See the module docs for why it cannot simply be one
 /// of the kernel's queues.
+///
+/// # The ring is guarded by the INTERRUPT MASK, not by a mutex
+///
+/// The radio sends to some of these queues from its interrupt handler. The
+/// first version guarded the ring with a kernel mutex, which a task takes and
+/// an interrupt cannot -- so an interrupt `push` could land between a task's
+/// read of `tail` and its write, and two events shared one slot. Every ring
+/// mutation now happens under [`Critical`], the same mask the interrupt runs
+/// behind, so there is no window.
+///
+/// The two semaphores carry the blocking, and both sides keep them exact:
+/// `filled` counts items a receiver may take, `empty` counts slots a sender
+/// may fill. The interrupt send used to skip `empty`, so the count of free
+/// slots drifted upward with every interrupt-side event.
 struct Q {
     storage: *mut u8,
     layout: Layout,
     capacity: usize,
     item_size: usize,
-    /// Guards the ring against two tasks writing at once.
-    lock: QueueHandle,
     /// Counts items present; a receiver takes it.
     filled: QueueHandle,
     /// Counts free slots; a sender takes it.
@@ -546,9 +623,11 @@ impl Queue {
     /// Copy one item into the ring at the front or the back.
     ///
     /// # Safety
-    /// `q` must be live and `item` must point at `item_size` readable bytes.
+    /// `q` must be live, `item` must point at `item_size` readable bytes, and
+    /// the caller must have reserved a slot (taken `empty`).
     unsafe fn push(q: *mut Q, item: *const u8, front: bool) {
-        // SAFETY: the caller's contract.
+        let _mask = Critical::enter();
+        // SAFETY: the caller's contract; the mask excludes every other writer.
         unsafe {
             let cap = (*q).capacity;
             let size = (*q).item_size;
@@ -560,28 +639,27 @@ impl Queue {
                 (*q).tail = (at + 1) % cap;
                 at
             };
-            core::ptr::copy_nonoverlapping(
-                (*q).storage.add(index * size),
-                (*q).storage.add(index * size),
-                0,
-            );
             core::ptr::copy_nonoverlapping(item, (*q).storage.add(index * size), size);
             (*q).len += 1;
         }
     }
 
-    /// Copy one item out of the ring.
+    /// Copy one item out of the ring, or drop it when `item` is null.
     ///
     /// # Safety
-    /// As [`Queue::push`], and `item` must be writable for `item_size`.
+    /// As [`Queue::push`], with `item` null or writable for `item_size`, and
+    /// the caller must have claimed an item (taken `filled`).
     unsafe fn pop(q: *mut Q, item: *mut u8) {
-        // SAFETY: the caller's contract.
+        let _mask = Critical::enter();
+        // SAFETY: as `push`.
         unsafe {
             let cap = (*q).capacity;
             let size = (*q).item_size;
             let at = (*q).head;
             (*q).head = (at + 1) % cap;
-            core::ptr::copy_nonoverlapping((*q).storage.add(at * size), item, size);
+            if !item.is_null() {
+                core::ptr::copy_nonoverlapping((*q).storage.add(at * size), item, size);
+            }
             (*q).len -= 1;
         }
     }
@@ -589,10 +667,8 @@ impl Queue {
 
 impl QueueImplementation for Queue {
     fn create(capacity: usize, item_size: usize) -> QueuePtr {
-        // Clamped BEFORE the buffer is sized. Through 0.2.1 the buffer was
-        // sized from the raw capacity and the queue stored `capacity.max(1)`,
-        // so a zero-capacity queue got a one-byte buffer and believed it held
-        // an item of `item_size` bytes: the first push overflowed the heap.
+        // A zero-capacity queue would be a zero-sized ring that every send
+        // overflows; the radio never asks for one, but the trait permits it.
         let capacity = capacity.max(1);
         let Some(bytes) = capacity.checked_mul(item_size) else {
             exhausted("a queue (capacity x item size overflows)");
@@ -600,28 +676,26 @@ impl QueueImplementation for Queue {
         let Ok(layout) = Layout::from_size_align(bytes.max(1), 8) else {
             exhausted("a queue (its size has no valid layout)");
         };
-        // SAFETY: a non-zero layout; checked below.
+        // SAFETY: a non-zero layout; the pointer is checked below.
         let storage = unsafe { alloc(layout) };
         if storage.is_null() {
             exhausted("a queue (out of memory)");
         }
         let made = with_kernel(&mut |k: &mut dyn KernelOps| {
-            let lock = k.mutex_create()?;
-            let filled = k.semaphore_create_counting(capacity.max(1), 0)?;
-            let empty = k.semaphore_create_counting(capacity.max(1), capacity)?;
-            Some((lock, filled, empty))
+            let filled = k.semaphore_create_counting(capacity, 0)?;
+            let empty = k.semaphore_create_counting(capacity, capacity)?;
+            Some((filled, empty))
         });
-        let Some((lock, filled, empty)) = made else {
-            // SAFETY: `storage` came from `alloc` with this layout.
+        let Some((filled, empty)) = made else {
+            // SAFETY: the storage is ours and nothing else holds it.
             unsafe { dealloc(storage, layout) };
             exhausted("a queue (the kernel's queue arena is full)");
         };
         let boxed = Box::into_raw(Box::new(Q {
             storage,
             layout,
-            capacity: capacity.max(1),
+            capacity,
             item_size,
-            lock,
             filled,
             empty,
             head: 0,
@@ -632,15 +706,14 @@ impl QueueImplementation for Queue {
     }
 
     unsafe fn delete(queue: QueuePtr) {
-        // SAFETY: the caller guarantees this came from `create`.
+        // SAFETY: a live pointer from `create`, never used again.
         let owned = unsafe { Box::from_raw(queue.as_ptr().cast::<Q>()) };
         with_kernel(&mut |k: &mut dyn KernelOps| {
-            let _ = k.queue_delete(owned.lock);
             let _ = k.queue_delete(owned.filled);
             let _ = k.queue_delete(owned.empty);
             Some(())
         });
-        // SAFETY: the storage came from `create`.
+        // SAFETY: allocated in `create` with this layout.
         unsafe { dealloc(owned.storage, owned.layout) };
     }
 
@@ -680,20 +753,25 @@ impl QueueImplementation for Queue {
         higher_prio_task_waken: Option<&mut bool>,
     ) -> bool {
         let q = queue.as_ptr().cast::<Q>();
-        // SAFETY: the caller's contract. From an ISR nothing may block, so
-        // a full queue is refused rather than waited on.
-        unsafe {
-            if (*q).len >= (*q).capacity {
-                return false;
-            }
-            Queue::push(q, item, false);
-            let handle = (*q).filled;
-            let woken = with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give_from_isr(handle));
-            if let (Some(w), Some(flag)) = (woken, higher_prio_task_waken) {
-                *flag = w;
-            }
-            true
+        isr_stats::QUEUE_SENDS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        // SAFETY: the caller's contract.
+        let (empty, filled) = unsafe { ((*q).empty, (*q).filled) };
+        // From an interrupt nothing may block: reserve a slot or refuse.
+        let reserved = matches!(
+            with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_take(empty, 0)),
+            Some(Blocked::Completed)
+        );
+        if !reserved {
+            isr_stats::QUEUE_FULL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            return false;
         }
+        // SAFETY: a slot is reserved.
+        unsafe { Queue::push(q, item, false) };
+        let woken = with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give_from_isr(filled));
+        if let (Some(w), Some(flag)) = (woken, higher_prio_task_waken) {
+            *flag = w;
+        }
+        true
     }
 
     unsafe fn receive(queue: QueuePtr, item: *mut u8, timeout_us: Option<u32>) -> bool {
@@ -714,19 +792,25 @@ impl QueueImplementation for Queue {
     unsafe fn try_receive_from_isr(
         queue: QueuePtr,
         item: *mut u8,
-        _higher_prio_task_waken: Option<&mut bool>,
+        higher_prio_task_waken: Option<&mut bool>,
     ) -> bool {
         let q = queue.as_ptr().cast::<Q>();
         // SAFETY: the caller's contract.
-        unsafe {
-            if (*q).len == 0 {
-                return false;
-            }
-            Queue::pop(q, item);
-            let handle = (*q).empty;
-            let _ = with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give_from_isr(handle));
-            true
+        let (empty, filled) = unsafe { ((*q).empty, (*q).filled) };
+        let claimed = matches!(
+            with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_take(filled, 0)),
+            Some(Blocked::Completed)
+        );
+        if !claimed {
+            return false;
         }
+        // SAFETY: an item is claimed.
+        unsafe { Queue::pop(q, item) };
+        let woken = with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give_from_isr(empty));
+        if let (Some(w), Some(flag)) = (woken, higher_prio_task_waken) {
+            *flag = w;
+        }
+        true
     }
 
     unsafe fn remove(queue: QueuePtr, _item: *const u8) {
@@ -736,62 +820,56 @@ impl QueueImplementation for Queue {
         // `item_size` opaque bytes and nothing here may interpret them.
         let q = queue.as_ptr().cast::<Q>();
         // SAFETY: the caller's contract.
-        unsafe {
-            if (*q).len == 0 {
-                return;
-            }
-            (*q).head = ((*q).head + 1) % (*q).capacity;
-            (*q).len -= 1;
-            let handle = (*q).empty;
-            let _ = with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_give(handle));
+        let (empty, filled) = unsafe { ((*q).empty, (*q).filled) };
+        let claimed = matches!(
+            with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_take(filled, 0)),
+            Some(Blocked::Completed)
+        );
+        if claimed {
+            // SAFETY: an item is claimed; a null destination drops it.
+            unsafe { Queue::pop(q, core::ptr::null_mut()) };
+            block_on(move |k: &mut dyn KernelOps| k.semaphore_give(empty));
         }
     }
 
     fn messages_waiting(queue: QueuePtr) -> usize {
         let q = queue.as_ptr().cast::<Q>();
-        // SAFETY: a live queue pointer from `create`.
+        let _mask = Critical::enter();
+        // SAFETY: a live pointer from `create`, read under the mask.
         unsafe { (*q).len }
     }
 }
 
-/// The blocking send both `send_to_*` forms share.
+/// A blocking send.
 ///
 /// # Safety
-/// `queue` must be live and `item` must point at `item_size` readable bytes.
+/// `queue` live, `item` readable for the queue's item size.
 unsafe fn send(queue: QueuePtr, item: *const u8, ticks: u64, front: bool) -> bool {
     let q = queue.as_ptr().cast::<Q>();
     // SAFETY: the caller's contract.
-    let (empty, filled, lock) = unsafe { ((*q).empty, (*q).filled, (*q).lock) };
+    let (empty, filled) = unsafe { ((*q).empty, (*q).filled) };
     if !block_on(move |k: &mut dyn KernelOps| k.semaphore_take(empty, ticks)) {
         return false;
     }
-    if !block_on(move |k: &mut dyn KernelOps| k.semaphore_take(lock, u64::MAX)) {
-        return false;
-    }
-    // SAFETY: the lock is held, so the ring is ours.
+    // SAFETY: a slot is reserved.
     unsafe { Queue::push(q, item, front) };
-    block_on(move |k: &mut dyn KernelOps| k.semaphore_give(lock));
     block_on(move |k: &mut dyn KernelOps| k.semaphore_give(filled));
     true
 }
 
-/// The blocking receive both `receive*` forms share.
+/// A blocking receive.
 ///
 /// # Safety
-/// `queue` must be live and `item` writable for `item_size` bytes.
+/// `queue` live, `item` writable for the queue's item size.
 unsafe fn receive_inner(queue: QueuePtr, item: *mut u8, ticks: u64) -> bool {
     let q = queue.as_ptr().cast::<Q>();
     // SAFETY: the caller's contract.
-    let (empty, filled, lock) = unsafe { ((*q).empty, (*q).filled, (*q).lock) };
+    let (empty, filled) = unsafe { ((*q).empty, (*q).filled) };
     if !block_on(move |k: &mut dyn KernelOps| k.semaphore_take(filled, ticks)) {
         return false;
     }
-    if !block_on(move |k: &mut dyn KernelOps| k.semaphore_take(lock, u64::MAX)) {
-        return false;
-    }
-    // SAFETY: the lock is held.
+    // SAFETY: an item is claimed.
     unsafe { Queue::pop(q, item) };
-    block_on(move |k: &mut dyn KernelOps| k.semaphore_give(lock));
     block_on(move |k: &mut dyn KernelOps| k.semaphore_give(empty));
     true
 }

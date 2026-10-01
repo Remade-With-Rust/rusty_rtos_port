@@ -1,16 +1,16 @@
-//! The kernel this cell runs, and the three things the adapter needs from
+//! The kernel this cell runs, and the three things the radio needs from
 //! it: a way to reach it, a real clock, and a switch.
 //!
-//! # Some of this is not called yet, on purpose
+//! Lifted from `xiao-s3-radio`, with two changes that only matter once the
+//! real radio is linked:
 //!
-//! `install`, `mark_started` and the timer service are reached by the
-//! cell's `main` only once a real `esp-radio` can be linked, and it cannot
-//! be: the published radio pins `esp-hal ~1.1.0` against this family's
-//! `=1.2.1`, and `xtensa-lx-rt` is a `links` crate. Until that is settled
-//! `main` is a placeholder, so these read as dead. They are allowed rather
-//! than deleted because deleting them would lose the half of the seam that
-//! already type-checks -- and the allowance is narrow and says why, so it
-//! stops being true the moment the cell is finished.
+//! * **Every kernel task has a stack.** `IDLE` and `Tmr Svc` get bodies
+//!   (see [`boot`]). With the radio blocking all of its own tasks, the
+//!   scheduler WILL choose idle, and a declined switch would leave `current`
+//!   naming a task the CPU is not running.
+//! * **The timer daemon runs the radio's software timers**, at the top
+//!   priority, so a scan or association timeout fires on time rather than
+//!   whenever something happens to call `delay`.
 //!
 //! # The switch is where our scheduler meets our port
 //!
@@ -27,7 +27,7 @@
 //! [`XtensaPort`] with a hardware tick and reads `esp_hal::time::Instant`
 //! for the microsecond figure.
 
-#![allow(dead_code, reason = "main is a placeholder until the radio can link")]
+#![allow(dead_code, reason = "diagnostics kept for the next board run")]
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -47,8 +47,8 @@ use rusty_rtos_kernel_core::{list_slots_for, lists_for, Kernel};
 use rusty_rtos_port_esp_radio::Blocked;
 use rusty_rtos_port_xtensa::{clear_switch_request, switch_context, Context, XtensaPort};
 
-/// Priorities: idle at 0, the radio's tasks between, the timer service at
-/// the top but one.
+/// Priorities: idle at 0, the radio's tasks between, the timer service and
+/// `main` at the top.
 pub const MAX_PRIORITIES: u8 = 8;
 
 /// How many tasks, including idle, the timer daemon and the radio's own.
@@ -72,7 +72,10 @@ impl Config for RadioConfig {
     const MAX_PRIORITIES: u8 = MAX_PRIORITIES;
     const MINIMAL_STACK_SIZE: usize = 512;
     const MAX_TASK_NAME_LEN: usize = 12;
-    const TIMER_TASK_PRIORITY: u8 = 1;
+    /// The top but one, level with the radio's own ceiling: the daemon
+    /// services the radio's timers, and a timer that fires late is a scan or
+    /// an association that times out late. `main` takes the top (see `boot`).
+    const TIMER_TASK_PRIORITY: u8 = MAX_PRIORITIES - 2;
     const TIMER_TASK_STACK_DEPTH: usize = 512;
     const TIMER_QUEUE_LENGTH: usize = 8;
     const NOTIFICATION_ARRAY_ENTRIES: usize = 1;
@@ -507,10 +510,35 @@ extern "C" fn on_tick() {
             }
         }
     };
+    let n = ISR_TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+    if ISR_BEAT.load(Ordering::Relaxed) && (n % 1000 == 0 || n == 100) {
+        // The PC this tick interrupted: a level-1 interrupt saves it in EPC1.
+        // When `main` is stuck spinning, this names the loop.
+        #[cfg(target_arch = "xtensa")]
+        let epc: u32 = {
+            let v: u32;
+            // SAFETY: reads a special register.
+            unsafe { core::arch::asm!("rsr.epc1 {0}", out(reg) v, options(nostack)) };
+            v
+        };
+        #[cfg(not(target_arch = "xtensa"))]
+        let epc: u32 = 0;
+        let (e, sw, same, noctx, lf, lt) = switch_counts();
+        // SAFETY: as above -- this handler owns the kernel for its duration.
+        let cur = unsafe { (*KERNEL.0.get()).as_ref().map(|k| k.current().index()) };
+        esp_println::println!(
+            "ISRBEAT n={n} epc={epc:#010x} cur={cur:?} sw={sw}/{e} same={same} noctx={noctx} last={lf}->{lt} timers={}",
+            TIMERS_FIRED.load(Ordering::Relaxed)
+        );
+    }
     if want {
         rusty_rtos_port_xtensa::yield_now();
     }
 }
+
+/// Ticks the interrupt has taken, and whether it prints a heartbeat.
+pub static ISR_TICKS: AtomicU32 = AtomicU32::new(0);
+pub static ISR_BEAT: AtomicBool = AtomicBool::new(false);
 
 pub fn boot() -> bool {
     let kernel = match K::new(XtensaPort::new(), NoTrace) {
@@ -518,39 +546,93 @@ pub fn boot() -> bool {
         Err(_) => return false,
     };
     install(kernel);
-    // Hand the driver crate this cell's kernel. It MUST happen before
-    // anything reaches an adapter type.
-    //
-    // Leaving it out does not fail to build and does not fail to link. With
-    // LTO on, `install` being uncalled makes the crate's HOST provably null,
-    // so `host()` folds to an unconditional panic and every adapter function
-    // behind it is deleted as unreachable. The binary shrank by 19,184 bytes
-    // of `.text` and lost all thirteen kernel queue/semaphore symbols, and
-    // the only way to SEE that was to compare the two builds -- on the board
-    // it would have been a panic on the first driver call.
+    // Hand the driver crate this cell's kernel, before anything reaches an
+    // adapter type (`xiao-s3-radio` records what LTO does without it).
     rusty_rtos_port_esp_radio::install(&HOST);
 
-    // `main` runs below the workers so that blocking it hands them the CPU.
-    let Some(main_task) = with_kernel(&mut |k: &mut K| k.create_task("main", 2).ok()) else {
+    // `main` runs ABOVE the daemon. The kernel's rule (`Kernel::start_scheduler`)
+    // is that the task owning the CPU must not sit below `TIMER_TASK_PRIORITY`
+    // -- and LEVEL is not enough: the first board run put both at 7, the
+    // daemon (created second) became `current` while the CPU was on `main`,
+    // and the first switch saved `main`'s registers as the daemon's. Strictly
+    // above is the only placement where `current` cannot move at start.
+    let main_priority = <RadioConfig as Config>::TIMER_TASK_PRIORITY + 1;
+    let Some(main_task) = with_kernel(&mut |k: &mut K| k.create_task("main", main_priority).ok())
+    else {
         return false;
     };
-    if with_kernel(&mut |k: &mut K| k.start_scheduler().ok()).is_none() {
+    let Some(started) = with_kernel(&mut |k: &mut K| k.start_scheduler().ok()) else {
         return false;
-    }
+    };
     rusty_rtos_port_esp_radio::register_main(main_task);
-    // Who the kernel thinks is running, and who `main` is. If these differ,
-    // every block below parks the wrong task.
+    rusty_rtos_port_esp_radio::register_kernel_task(started.idle, idle_body, 2048);
+    rusty_rtos_port_esp_radio::register_kernel_task(started.timer, timer_body, 6144);
     let current = with_kernel(&mut |k: &mut K| Some(k.current())).unwrap_or_default();
     esp_println::println!(
-        "RADIO boot main_index={} current_index={} ready_at_2={:?}",
+        "WIFI boot main={} idle={} tmr={} current={}",
         main_task.index(),
-        current.index(),
-        with_kernel(&mut |k: &mut K| k.ready_len(2).ok())
+        started.idle.index(),
+        started.timer.index(),
+        current.index()
     );
 
     rusty_rtos_port_xtensa::enable_switching();
     mark_started();
     true
+}
+
+/// Block the calling task for `ticks` and let the scheduler run something
+/// else. The kernel parks the task; the yield is what takes it off the CPU.
+pub fn sleep_ticks(ticks: u64) {
+    let _ = with_kernel(&mut |k: &mut K| k.delay(ticks).ok());
+    yield_and_switch();
+}
+
+/// How many radio timers the daemon has fired.
+pub static TIMERS_FIRED: AtomicU32 = AtomicU32::new(0);
+
+/// `Tmr Svc`: service the radio's timer table once a tick.
+///
+/// The callbacks run here, in a task, because a radio timer callback may take
+/// a semaphore and an interrupt cannot block.
+extern "C" fn timer_body(_: *mut core::ffi::c_void) {
+    let mut beat: u32 = 0;
+    loop {
+        let fired = rusty_rtos_port_esp_radio::service_timers();
+        if fired != 0 {
+            TIMERS_FIRED.fetch_add(fired, Ordering::Relaxed);
+        }
+        beat = beat.wrapping_add(1);
+        if HEARTBEAT.load(Ordering::Relaxed) && beat % 1000 == 0 {
+            let (e, sw, same, noctx, lf, lt) = switch_counts();
+            esp_println::println!(
+                "BEAT t={}ms sw={sw}/{e} same={same} noctx={noctx} last={lf}->{lt} timers={} {}",
+                beat,
+                TIMERS_FIRED.load(Ordering::Relaxed),
+                ready_report()
+            );
+        }
+        sleep_ticks(1);
+    }
+}
+
+/// Print a heartbeat from the daemon once a second.
+pub static HEARTBEAT: AtomicBool = AtomicBool::new(false);
+
+/// `IDLE`: halt until the next interrupt. Never blocks.
+///
+/// `waiti 0` drops PS.INTLEVEL to zero, which is where a task already runs;
+/// it would destroy a critical section, and there is none here.
+extern "C" fn idle_body(_: *mut core::ffi::c_void) {
+    loop {
+        #[cfg(target_arch = "xtensa")]
+        // SAFETY: waits for an interrupt; touches no memory.
+        unsafe {
+            core::arch::asm!("waiti 0", options(nostack));
+        }
+        #[cfg(not(target_arch = "xtensa"))]
+        core::hint::spin_loop();
+    }
 }
 
 /// Start the 1 kHz tick. Separate from [`boot`] because it needs a

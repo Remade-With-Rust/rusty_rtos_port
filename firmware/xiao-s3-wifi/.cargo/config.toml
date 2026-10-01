@@ -1,0 +1,15 @@
+[build]
+target = "xtensa-esp32s3-none-elf"
+
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor"
+rustflags = [
+    # (inherited from xiao-s3-radio; unused here, the heap is heap_4)
+    "--cfg", "ra_single_threaded",
+    "--cfg", "ra_small_profile",
+    "-C", "link-arg=-Tlinkall.x",
+    "-C", "link-arg=-nostartfiles",
+]
+
+[unstable]
+build-std = ["core", "alloc"]

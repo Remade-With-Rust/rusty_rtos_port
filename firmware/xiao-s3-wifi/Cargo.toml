@@ -1,0 +1,69 @@
+[package]
+name = "xiao-s3-wifi"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# The scheduler under test, by path.
+rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
+rusty_rtos_port-xtensa = { path = "../../crates/rusty_rtos_port-xtensa", default-features = false }
+# The five `esp-radio-rtos-driver` implementations over the Kairos kernel.
+rusty_rtos_port-esp-radio = { path = "../../crates/rusty_rtos_port-esp-radio", default-features = false, features = [
+    "xtensa",
+    "ipc-implementations",
+    "esp32s3",
+] }
+# The heap: Kairos `heap_4`, for Rust AND the radio blob's `malloc`. See
+# `src/libc_heap.rs` for why it is not rusty_alloc in this cell.
+rusty_rtos_heap-core = { path = "../../../rusty_rtos_heap/crates/rusty_rtos_heap-core", default-features = false }
+
+esp-radio-rtos-driver = { version = "=0.4.2", features = ["esp32s3", "ipc-implementations"] }
+# The radio itself. `default-features = false` drops `esp-alloc`: the blob's
+# allocations go to `rusty_rtos_alloc` through the eight C functions the
+# crate documents for that opt-out.
+esp-radio = { version = "=1.0.0-beta.1", default-features = false, features = [
+    "esp32s3",
+    "wifi",
+    "unstable",
+] }
+
+heapless = { version = "0.8", default-features = false }
+log = { version = "0.4", optional = true }
+
+esp-hal = { version = "=1.2.1", features = ["esp32s3", "unstable"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", default-features = false, features = [
+    "esp32s3",
+    "jtag-serial",
+] }
+esp-backtrace = { version = "=0.20.0", features = [
+    "esp32s3",
+    "panic-handler",
+    "println",
+] }
+
+[features]
+# The blob's own log lines, through esp-println. Diagnostic only: it changes
+# timing and size, so no number is taken with it on.
+# Stage 1b: become an open access point, so ANOTHER radio can confirm the
+# blob transmits on Kairos.
+softap = []
+driver-logs = ["dep:log", "esp-radio/print-logs-from-driver", "esp-radio/log-04", "esp-println/log-04"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+debug = true
+
+[workspace]
+
+# As `xiao-s3-radio`: the adapter names the Xtensa port by version, this
+# cell by path, and without this row cargo builds both.
+[patch.crates-io]
+rusty_rtos_port-xtensa = { path = "../../crates/rusty_rtos_port-xtensa" }

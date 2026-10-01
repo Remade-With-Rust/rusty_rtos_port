@@ -123,7 +123,9 @@ pub use adapter::{Queue, Scheduler, Semaphore, Timer, WaitQueue};
     any(feature = "xtensa", feature = "riscv"),
     feature = "ipc-implementations"
 ))]
-pub use adapter::{TaskSlot, context_of, handle_for, register_main};
+pub use adapter::{
+    TaskSlot, context_of, handle_for, isr_stats, register_kernel_task, register_main,
+};
 pub use host::{Blocked, KernelOps, RadioHost};
 #[cfg(all(
     any(feature = "xtensa", feature = "riscv"),

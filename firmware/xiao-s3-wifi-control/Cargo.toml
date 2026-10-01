@@ -1,0 +1,35 @@
+[package]
+name = "xiao-s3-wifi-control"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# The NULL ARM for `xiao-s3-wifi`: the same scan on the same board with
+# Espressif's own scheduler (`esp-rtos`) and allocator (`esp-alloc`). Nothing
+# from the Kairos family is in this binary. If this finds access points and
+# the Kairos cell does not, the difference is ours; if neither does, it is the
+# board or the air.
+
+[dependencies]
+esp-rtos = { version = "=0.4.0", features = ["esp32s3", "esp-radio", "esp-alloc"] }
+esp-radio = { version = "=1.0.0-beta.1", features = ["esp32s3", "wifi", "unstable"] }
+esp-alloc = { version = "=0.11.0", features = ["esp32s3"] }
+esp-hal = { version = "=1.2.1", features = ["esp32s3", "unstable"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", default-features = false, features = ["esp32s3", "jtag-serial"] }
+esp-backtrace = { version = "=0.20.0", features = ["esp32s3", "panic-handler", "println"] }
+
+log = { version = "0.4", optional = true }
+
+[features]
+driver-logs = ["dep:log", "esp-radio/print-logs-from-driver", "esp-radio/log-04", "esp-println/log-04"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = true
+
+[workspace]

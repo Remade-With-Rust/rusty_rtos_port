@@ -28,12 +28,13 @@ use crate::Critical;
 
 /// How many timers the radio may have at once.
 ///
-/// `esp-radio` creates a handful — one per connection state machine and a
-/// few for the scan — so sixteen is slack rather than a budget. A
-/// seventeenth is refused with [`usize::MAX`], which
-/// [`TimerImplementation::create`](crate::Timer) turns into a null handle,
-/// and the radio treats that as it treats any allocation failure.
-const MAX_RADIO_TIMERS: usize = 16;
+/// A station needs about a dozen — one per connection state machine and a
+/// few for the scan. An ACCESS POINT needs more: `ieee80211_hostap_attach`
+/// arms its own set when soft-AP mode starts, and sixteen ran out there on
+/// the first board run (the adapter halts rather than hand the blob a null
+/// timer it would use). 64 slots are 2.5 KiB of table. A sixty-fifth is
+/// refused with [`usize::MAX`], which the adapter turns into that halt.
+const MAX_RADIO_TIMERS: usize = 64;
 
 #[derive(Clone, Copy)]
 struct RadioTimer {
