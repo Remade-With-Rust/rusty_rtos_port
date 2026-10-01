@@ -64,11 +64,23 @@ const SYST_ENABLE: u32 = 0b111;
 /// `SysTick->CTRL.COUNTFLAG`: set if the counter reached zero since this
 /// register was last READ. Reading clears it, so it may only be read once
 /// per decision, and the value has to be kept in a local.
+#[cfg_attr(
+    not(target_arch = "arm"),
+    allow(dead_code, reason = "used only by the Arm-gated tickless path")
+)]
 const SYST_COUNTFLAG: u32 = 1 << 16;
 /// `SysTick->LOAD` is 24 bits wide, and so is the largest sleep one
 /// programming of it can buy.
+#[cfg_attr(
+    not(target_arch = "arm"),
+    allow(dead_code, reason = "used only by the Arm-gated tickless path")
+)]
 const SYST_MAX_RELOAD: u32 = 0x00FF_FFFF;
 /// `ICSR.PENDSTCLR`: drop a pending SysTick exception on the floor.
+#[cfg_attr(
+    not(target_arch = "arm"),
+    allow(dead_code, reason = "used only by the Arm-gated tickless path")
+)]
 const PENDSTCLR: u32 = 1 << 25;
 
 /// `SCB->SHPR3`, which holds the priorities of SysTick and PendSV.
@@ -180,18 +192,36 @@ mod pendsv {
 /// `pxPortInitialiseStack`. `top` is one past the highest usable word of
 /// the task's stack; the answer is the value to put in the task's SP slot.
 ///
+/// `unsafe` because it writes sixteen words below a pointer it cannot check.
+/// It was a safe `fn` through 0.2.1, which let safe code hand it any address
+/// and corrupt memory with no `unsafe` in sight -- unsound, found by the
+/// hardening audit of 2026-10-01. The doc then also promised that "a stack
+/// too small to hold a frame answers `top` unchanged"; nothing checked that,
+/// and nothing can, given only a pointer.
+///
+/// # Safety
+///
+/// `top`, rounded down to 8 bytes, must be one past a writable region of at
+/// least sixteen `usize` words that is not otherwise in use and outlives the
+/// task: every write lands in `[aligned_top - 16 words, aligned_top)`.
+///
 /// # Panics
-/// Never. A stack too small to hold a frame answers `top` unchanged, which
-/// a caller can detect because it is not below what it passed in.
+///
+/// Never.
+#[expect(
+    unsafe_code,
+    reason = "writes the initial frame through a pointer it cannot check"
+)]
 #[must_use]
-pub fn init_stack(top: *mut usize, entry: extern "C" fn(usize) -> !, arg: usize) -> usize {
+pub unsafe fn init_stack(top: *mut usize, entry: extern "C" fn(usize) -> !, arg: usize) -> usize {
     // The exception frame the hardware pops, high address first:
     //   xPSR, PC, LR, R12, R3, R2, R1, R0
     // then our eight callee-saved words below it.
     const FRAME: usize = 8 + 8;
-    // SAFETY: the caller guarantees `top` is one past a stack of at least
-    // FRAME words. Every write below is within `top[-FRAME .. top]`, and
-    // the pointer is only ever formed by offsetting inside that range.
+    // SAFETY: the contract above -- `top` rounded down is one past at least
+    // FRAME writable words. Every write below is within
+    // `aligned_top[-FRAME .. aligned_top]`, and the pointer is only ever
+    // formed by offsetting inside that range.
     #[expect(unsafe_code, reason = "writing the initial exception frame")]
     unsafe {
         // The frame must be 8-byte aligned on entry, per AAPCS.
@@ -323,6 +353,10 @@ fn write_reg(_addr: *mut u32, _value: u32) {}
 /// As [`write_reg`], and for the same reason the host build reads nothing.
 /// Every caller treats zero as "decline", so a host build declines.
 #[cfg(not(target_arch = "arm"))]
+#[allow(
+    dead_code,
+    reason = "its callers today are all on the Arm-gated tickless path"
+)]
 #[inline]
 #[must_use]
 fn read_reg(_addr: *mut u32) -> u32 {

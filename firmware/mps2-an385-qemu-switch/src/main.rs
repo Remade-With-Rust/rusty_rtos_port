@@ -209,8 +209,12 @@ fn main() -> ! {
     // created, which is what makes taking these addresses sound.
     let top_a = core::ptr::addr_of_mut!(STACK_A).cast::<usize>().wrapping_add(STACK_WORDS);
     let top_b = core::ptr::addr_of_mut!(STACK_B).cast::<usize>().wrapping_add(STACK_WORDS);
-    SLOT_A.store(init_stack(top_a, task_a, 0), Ordering::SeqCst);
-    SLOT_B.store(init_stack(top_b, task_b, 1), Ordering::SeqCst);
+    // SAFETY: each top is one past its own static stack of STACK_WORDS
+    // words, far more than the sixteen `init_stack` writes.
+    #[allow(unsafe_code)]
+    let (sp_a, sp_b) = unsafe { (init_stack(top_a, task_a, 0), init_stack(top_b, task_b, 1)) };
+    SLOT_A.store(sp_a, Ordering::SeqCst);
+    SLOT_B.store(sp_b, Ordering::SeqCst);
 
     set_scheduler(pick_next);
     // Start on A.

@@ -537,7 +537,12 @@ fn arm_task(handle: TaskHandle, top: *mut usize, entry: extern "C" fn(usize) -> 
     let i = handle.index() as usize;
     match SLOTS_SP.get(i) {
         Some(slot) => {
-            slot.store(init_stack(top, entry, i), Ordering::SeqCst);
+            // SAFETY: every caller passes one past the end of a static
+            // task stack of STACK_WORDS words, far more than the sixteen
+            // `init_stack` writes, used by no other task.
+            #[allow(unsafe_code)]
+            let sp = unsafe { init_stack(top, entry, i) };
+            slot.store(sp, Ordering::SeqCst);
             true
         }
         None => false,

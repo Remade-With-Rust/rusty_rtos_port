@@ -44,6 +44,16 @@
 //! repository is being mutated in place: a mutated kernel would fail them
 //! and the failure would be scored against the port.
 
+// A host test: an `expect` or a `panic` IS the failure report, and the
+// arithmetic is on deadlines and counts this file controls.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
