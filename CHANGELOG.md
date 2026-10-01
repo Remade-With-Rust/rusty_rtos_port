@@ -3,7 +3,7 @@
 Security-relevant changes are called out under **Security** (hardening gate
 H-38). Versions follow SemVer; in 0.x a minor bump may break the API.
 
-## Unreleased -- to be released as 0.3.0 (breaking)
+## 0.3.0 — 2026-10-01 (breaking)
 
 ### Security
 - **BREAKING:** `rusty_rtos_port_cortex_m::init_stack` is an `unsafe fn`. It

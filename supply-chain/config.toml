@@ -43,13 +43,13 @@ notes = "This repository: first-party code, reviewed in this repository."
 
 [policy."rusty_rtos_port-riscv:0.2.0"]
 
-[policy."rusty_rtos_port-riscv:0.2.1"]
+[policy."rusty_rtos_port-riscv:0.3.0"]
 audit-as-crates-io = false
 notes = "This repository: first-party code, reviewed in this repository."
 
 [policy."rusty_rtos_port-xtensa:0.2.0"]
 
-[policy."rusty_rtos_port-xtensa:0.2.1"]
+[policy."rusty_rtos_port-xtensa:0.3.0"]
 audit-as-crates-io = false
 notes = "This repository: first-party code, reviewed in this repository."
 
