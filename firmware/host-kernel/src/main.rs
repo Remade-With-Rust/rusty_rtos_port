@@ -185,7 +185,7 @@ extern "C" fn pick_next() {
         k.current()
     });
     if let Some(handle) = next {
-        let to = usize::from(handle.index());
+        let to = handle.index() as usize;
         let n = SWITCHES.fetch_add(1, Ordering::Relaxed);
         // `KAIROS_HOST_TRACE=1` prints the first switches with the
         // round-robin cursor beside them. A task that is ready and never
@@ -443,11 +443,11 @@ fn main() {
         std::process::exit(1);
     };
 
-    init_task(usize::from(hi.index()), task_hi);
-    init_task(usize::from(lo.index()), task_lo);
-    init_task(usize::from(lo2.index()), task_lo2);
-    init_task(usize::from(started.idle.index()), task_idle);
-    init_task(usize::from(started.timer.index()), task_timer);
+    init_task(hi.index() as usize, task_hi);
+    init_task(lo.index() as usize, task_lo);
+    init_task(lo2.index() as usize, task_lo2);
+    init_task(started.idle.index() as usize, task_idle);
+    init_task(started.timer.index() as usize, task_timer);
 
     let Some(first) = with_kernel(|k| k.current()) else {
         println!("the kernel named no first task");
@@ -460,6 +460,6 @@ fn main() {
     // `FreeRTOSConfig.h` and its Rust `Config` have to keep.
     Ticker::new(Duration::from_millis(1), on_tick).spawn();
 
-    println!("starting the first task ({})...", usize::from(first.index()));
-    start_first_task(usize::from(first.index()));
+    println!("starting the first task ({})...", first.index() as usize);
+    start_first_task(first.index() as usize);
 }

@@ -210,7 +210,7 @@ extern "C" fn pick_next() {
         k.current()
     });
     if let Some(handle) = next {
-        let i = usize::from(handle.index());
+        let i = handle.index() as usize;
         if let Some(slot) = SLOTS_SP.get(i) {
             CURRENT_SP_SLOT.store(core::ptr::from_ref(slot) as usize, Ordering::Relaxed);
             SWITCHES.fetch_add(1, Ordering::Relaxed);
@@ -410,7 +410,7 @@ fn SysTick() {
 
 /// Give one task a stack and record it in its own slot.
 fn arm_task(handle: TaskHandle, top: *mut usize, entry: extern "C" fn(usize) -> !) -> bool {
-    let i = usize::from(handle.index());
+    let i = handle.index() as usize;
     match SLOTS_SP.get(i) {
         Some(slot) => {
             slot.store(init_stack(top, entry, i), Ordering::SeqCst);
@@ -495,7 +495,7 @@ fn main() -> ! {
 
     // The kernel picked a current task when the scheduler started; point
     // the port at its slot so the first switch has somewhere to come from.
-    let first = usize::from(kernel.current().index());
+    let first = kernel.current().index() as usize;
     if let Some(slot) = SLOTS_SP.get(first) {
         CURRENT_SP_SLOT.store(core::ptr::from_ref(slot) as usize, Ordering::SeqCst);
     }

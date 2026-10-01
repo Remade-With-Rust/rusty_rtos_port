@@ -630,7 +630,7 @@ fn switching_interrupt(trap_frame: &mut Context) {
     let from = CURRENT.load(Ordering::Acquire) as usize;
     let to = with_kernel_in_isr(|k| {
         k.switch_context();
-        usize::from(k.current().index())
+        k.current().index() as usize
     })
     .unwrap_or(from);
     if from == to || to >= CONTEXTS {
@@ -900,7 +900,7 @@ fn finish() -> ! {
 
 /// Give one task a context and record it in its own slot.
 fn arm_task(handle: TaskHandle, stack: *mut Stack, body: extern "C" fn(usize) -> !) -> bool {
-    let i = usize::from(handle.index());
+    let i = handle.index() as usize;
     if i >= TASKS {
         return false;
     }
