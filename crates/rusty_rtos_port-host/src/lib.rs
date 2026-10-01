@@ -410,6 +410,11 @@ mod backend {
         reason = "a signal handler is the only code that runs in another thread without its cooperation"
     )]
     extern "C" fn on_suspend(_signal: core::ffi::c_int) {
+        // First, before anything can touch it: `sigsuspend` below always
+        // sets `errno` (to `EINTR`), and the code this handler interrupted
+        // may be between a failing syscall and reading its `errno`. Put back
+        // on every return by the guard's `Drop`.
+        let _errno = SavedErrno::take();
         // SAFETY: `pthread_self` reads the calling thread's own id and is
         // async-signal-safe.
         let me = unsafe { libc::pthread_self() } as usize;
@@ -442,6 +447,65 @@ mod backend {
                 libc::sigsuspend(&raw const mask);
             }
         }
+    }
+
+    /// `errno` as the interrupted code left it, restored when the signal
+    /// handler returns.
+    ///
+    /// A signal handler that calls anything able to set `errno` must put it
+    /// back, or the code it interrupted can read a value it did not cause --
+    /// a failed `read` reporting `EINTR`, or a success reporting an error.
+    /// `on_suspend` calls `sigsuspend`, which always sets it. ThreadSanitizer
+    /// reported exactly this ("signal handler spoils errno") on the host
+    /// port's tests during the hardening audit of 2026-10-01.
+    struct SavedErrno(Option<core::ffi::c_int>);
+
+    impl SavedErrno {
+        #[expect(
+            unsafe_code,
+            reason = "reading errno through the C runtime's per-thread pointer"
+        )]
+        fn take() -> Self {
+            // SAFETY: the pointer is the calling thread's own errno slot,
+            // valid for the life of the thread; reading it is what `errno`
+            // means, and is async-signal-safe.
+            Self(errno_location().map(|p| unsafe { *p }))
+        }
+    }
+
+    impl Drop for SavedErrno {
+        #[expect(
+            unsafe_code,
+            reason = "writing errno through the C runtime's per-thread pointer"
+        )]
+        fn drop(&mut self) {
+            if let (Some(p), Some(value)) = (errno_location(), self.0) {
+                // SAFETY: as `take`: this thread's own errno slot.
+                unsafe { *p = value };
+            }
+        }
+    }
+
+    /// The calling thread's `errno` slot, where the C runtime names it.
+    /// `None` on a Unix this does not know, which then keeps the old
+    /// behaviour rather than failing to build.
+    #[expect(unsafe_code, reason = "the C runtime's errno accessor is an extern fn")]
+    fn errno_location() -> Option<*mut core::ffi::c_int> {
+        // SAFETY: each accessor takes no arguments and returns this
+        // thread's errno slot; all are async-signal-safe.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        return Some(unsafe { libc::__errno_location() });
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "dragonfly"
+        ))]
+        return Some(unsafe { libc::__error() });
+        #[cfg(any(target_os = "openbsd", target_os = "netbsd"))]
+        return Some(unsafe { libc::__errno() });
+        #[allow(unreachable_code)]
+        None
     }
 
     /// Wake a parked thread. `SIGUSR2`.
