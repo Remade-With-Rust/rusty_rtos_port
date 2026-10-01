@@ -8,8 +8,8 @@
 **Compliance**: none — no compliance framework in scope for an embedded kernel component; revisit at 1.0.0
 **Architect**: [Tim Almond](https://github.com/Ttimmahlax) — accountable for this unit's security design; rendered
 at the foot of the block in every README and mirror
-**Audit depth**: survey
-**Audited**: 2026-09-09 by kairos (K1 pass) · **Next review**: the rest of the nine-scenario corpus
+**Audit depth**: deep (tools run: cargo vet, cargo fuzz, ASan, TSan where it applies, cargo careful, clippy `-D warnings`, the unsafe census)
+**Audited**: 2026-10-01 by the v1.0-readiness pass · **Next review**: at every release, and no later than 2027-01-01
 
 > Source of truth for this unit's hardening status. The README's status table is
 > **generated from this file** — edit here, then run:
@@ -40,17 +40,17 @@ Evidence; excluded from the totals).
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
-| H-01 | ★ Threat model documented and linked from README | Incomplete | the sketch above; `docs/threat-model.md` is the first milestone's deliverable | |
-| H-02 | Threat model revisited after last major change | Incomplete | no major change yet | |
+| H-01 | ★ Threat model documented and linked from README | Completed | `docs/threat-model.md` (model v1, 2026-10-01): assets, adversaries, six attack paths each with the test, fuzz target, QEMU/S3 cell or CI job that evidences it; linked from the README's `## Security` | |
+| H-02 | Threat model revisited after last major change | Completed | model v1 is dated 2026-10-01, after the last major change (this pass: `init_stack` made `unsafe`, the esp-radio and host fixes) | |
 
 ### Phase 1 — Toolchain
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
 | H-03 | Toolchain pinned (`rust-toolchain.toml`) | Completed | `rust-toolchain.toml`: channel 1.98.0, clippy + rustfmt, the four bare-metal targets | |
-| H-04 | Committed `.cargo/config.toml` hardening defaults | Incomplete | `.cargo/config.toml` is the gitignored sibling-patch seam (`kairos patches`); linker hardening belongs to each firmware's own config | |
+| H-04 | Committed `.cargo/config.toml` hardening defaults | N/A | a library: a dependency's `.cargo/config.toml` never applies to the consumer's build, and this repo's is the gitignored sibling-patch seam. Frame pointers and linker hardening belong to each firmware's own config | |
 | H-05 | ★ Release profile hardened (overflow-checks, LTO, panic policy) | Completed | `Cargo.toml` `[profile.release]`: `overflow-checks = true`, `lto = "thin"`, `codegen-units = 1`; libraries stay unwind-safe, firmware binaries choose `panic = "abort"` | |
-| H-06 | Security toolchain available to CI and developers | Incomplete | CI installs cargo-deny (`taiki-e/install-action`); audit / vet / geiger / miri / fuzz are on the developer box, not yet in CI | |
+| H-06 | Security toolchain available to CI and developers | Completed | CI installs the tool set pinned by version through a SHA-pinned `taiki-e/install-action`: `cargo-deny@0.19.9`, `cargo-vet@0.10.2`, `cargo-fuzz@0.13.2`, `cargo-careful@0.4.10` (`.github/workflows/ci.yml`, `scheduled.yml`); the same versions on the developer box | |
 
 ### Phase 2 — Supply chain
 
@@ -59,7 +59,7 @@ Evidence; excluded from the totals).
 | H-07 | ★ `Cargo.lock` committed | Completed | `Cargo.lock` tracked in the first commit (`git ls-files Cargo.lock`) | |
 | H-08 | ★ `deny.toml` policy present and enforced | Completed | `cargo deny check` 2026-09-09: advisories ok, bans ok, licenses ok, sources ok | |
 | H-09 | ★ Vulnerability scan clean (`cargo audit`) | Completed | `cargo audit` 2026-09-09: 0 advisories | |
-| H-10 | ★ `cargo vet` coverage complete | Incomplete | no `supply-chain/` yet | |
+| H-10 | ★ `cargo vet` coverage complete | Incomplete | `supply-chain/`: 25 fully audited (house crates by publisher; windows-*, libc, cfg-if, syn, quote, proc-macro2, unicode-ident by the publishers the imported audit sets already trust); `cargo vet --locked` in CI. 27 embedded-ecosystem crates exempted -- trusting their publishers is the owner's attestation (threat model R-1) | |
 | H-11 | Unsafe inventory measured and trending down (geiger) | Completed | `cargo geiger` 2026-09-16: **0/0** functions, expressions, impls, traits and methods across the whole dependency tree, reported `:)` — no `unsafe` usage found, `#![forbid(unsafe_code)]` declared. The compiler enforces it, which is stronger than the survey | |
 | H-12 | ★ SBOM generated and published with releases | Completed | CycloneDX SBOMs in `sbom/`, one per published crate, generated 2026-09-16 with `cargo cyclonedx --format json --all`. Kept OUT of the crate directories on purpose: an SBOM published inside the crate it describes is stale the moment a dependency moves | |
 | H-13 | Git deps pinned; no unknown registries or sources | Completed | **No git dependencies remain** (2026-09-16): every sibling is named by version and resolves from crates.io, which is what `cargo publish` requires and what the mission plan's §2.11 "released pins only" means. `deny.toml` `[sources]` denies unknown registries and unknown git, and its `allow-git` list is now EMPTY — an allowance nothing uses is a warning on every run | |
@@ -71,47 +71,47 @@ Evidence; excluded from the totals).
 |---|---|---|---|---|
 | H-15 | ★ Workspace lint policy set and clean | Completed | `[workspace.lints]` as the family's; `cargo clippy --workspace --all-targets -- -D warnings` clean | |
 | H-16 | ★ `unsafe` isolated, SAFETY-commented, inventoried | Completed | `forbid(unsafe_code)`; `UNSAFE.md` lists none. This is the package that will eventually hold the family's only `unsafe` — at the context switch and the vector table — and it holds none today | |
-| H-17 | Arithmetic safety explicit | Incomplete | `arithmetic_side_effects = warn` under `-D warnings`; no arithmetic yet to audit | |
+| H-17 | Arithmetic safety explicit | Incomplete | six of the seven crates inherit `arithmetic_side_effects` under CI's `-D warnings`, with every allowed site reasoned; `rusty_rtos_port-esp-radio` does not inherit the workspace lints (threat model R-6). Its queue sizing is now `checked_mul` | |
 | H-18 | ★ No `unwrap`/`expect`/panic on untrusted paths; typed errors | Completed | `unwrap_used`, `expect_used`, `panic` = deny at the workspace; tests opt out per file | |
-| H-19 | Input validation — external bytes treated as hostile | Incomplete | no parser yet; the no-panic gate arrives with the first one | |
-| H-20 | ★ Secrets zeroized; never logged | Incomplete | no secret enters this crate by design; state it in the threat model | |
-| H-21 | Concurrency discipline | Incomplete | no shared mutable state yet | |
+| H-19 | Input validation — external bytes treated as hostile | Completed | the unit parses no bytes; its untrusted inputs are raw stack pointers and sizes, each an `unsafe fn` contract checked by `fuzz/task_stacks`. The esp-radio queue now clamps and `checked_mul`s its sizes (a heap overflow on zero capacity, fixed 2026-10-01) | |
+| H-20 | ★ Secrets zeroized; never logged | Completed | `docs/threat-model.md` §5: no key material enters the ports by design and nothing is logged; the register state they copy is stated, with the un-wiped context of a deleted task as residual R-3 | |
+| H-21 | Concurrency discipline | Completed | no manual `Send`/`Sync` impls (grep); shared state is atomics and the kernel's critical section, each `static mut` (esp-radio's two tables) written under it and documented in `UNSAFE.md`; ThreadSanitizer over the host port's tests is clean after the `errno` fix (2026-10-01) | |
 
 ### Phase 4 — Static analysis
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
-| H-22 | Static analysis beyond the default linter runs on every PR | Incomplete | | |
+| H-22 | Static analysis beyond the default linter runs on every PR | Completed | `tools/unsafe_census.py` in CI (`hardening` job): the compiler forces every `unsafe` into an `#[expect(unsafe_code)]` fence and the census fails if a fence's item is missing from its crate's section of `UNSAFE.md`, or if a crate does not deny `unsafe_code` and `UNSAFE.md` does not pin its count. A pattern rule beyond clippy; on its first run it found 19 undocumented fences and one unfenced crate in the port family | |
 
 ### Phase 5 — Dynamic analysis
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
 | H-23 | ★ Tests pass under Miri | Completed | `cargo +nightly miri test --lib` 2026-09-09: green (miri 0.1.0 of 2026-09-08) | |
-| H-24 | Critical paths pass the sanitizers (ASan/MSan/TSan) | Incomplete | | |
-| H-25 | `cargo careful test` green | Incomplete | | |
+| H-24 | Critical paths pass the sanitizers (ASan/MSan/TSan) | Completed | AddressSanitizer over the workspace's tests (Windows, 2026-10-01): 13 + 7 + 5 + 3 passed, no report. ThreadSanitizer over the multi-threaded host port (WSL, `-Zbuild-std`): it reported "signal handler spoils errno" in `on_suspend`, which was fixed (`SavedErrno`), then 7 passed, no warning. Both nightly in `scheduled.yml` | |
+| H-25 | `cargo careful test` green | Completed | `cargo +nightly careful test --workspace --lib --tests`: all green, 2026-10-01; runs nightly in `scheduled.yml` | |
 
 ### Phase 6 — Fuzzing and properties
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
-| H-26 | ★ Fuzz target per public parser, decoder, or message handler | Incomplete | no parser yet | |
-| H-27 | ★ Continuous fuzzing with no open crashes | Incomplete | | |
-| H-28 | Property tests cover the documented invariants | Incomplete | | |
+| H-26 | ★ Fuzz target per public parser, decoder, or message handler | Completed | `fuzz/fuzz_targets/task_stacks.rs` (seeded corpus): every port's `unsafe` stack builder on exactly-sized heap stacks of every size and alignment -- ASan for writes past the buffer, a canary for writes outside the documented window, the frame values where the switch reads them. 774,184 inputs in 60 s, no finding | |
+| H-27 | ★ Continuous fuzzing with no open crashes | Incomplete | the nightly job exists (`scheduled.yml`); the gate needs 30 days of it, which starts when it is pushed | |
+| H-28 | Property tests cover the documented invariants | Incomplete | the stack builders' window invariants are checked by `fuzz/task_stacks`, and register preservation by the poisoned QEMU cells, but there are no property tests as such | |
 | H-29 | Mutation and/or differential testing on critical modules | Completed | the sim port is diffed against the C Posix port through the kernel's trace: 8,408,764 lines across nine scenarios and the exit/yield counters identical, 100,000 ticks each (ledger) | |
 
 ### Phase 7 — Formal verification
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
-| H-30 | Proof of panic-freedom / UB-freedom per `unsafe` module | Incomplete | no unsafe module; Kani harnesses for the CBMC proof list arrive with K2 | |
+| H-30 | Proof of panic-freedom / UB-freedom per `unsafe` module | Incomplete | the switches are assembly, which Kani cannot model; evidence is the QEMU cells and S3 runs, each with a poisoning that makes it fail (threat model R-4) | |
 
 ### Phase 8 — Build and binary
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
 | H-31 | ★ Binary hardening applied and verified | N/A | a library; the firmware binaries carry this gate | |
-| H-32 | Build is reproducible or fully auditable | Incomplete | | |
+| H-32 | Build is reproducible or fully auditable | N/A | out of tier: a library, so no binary artifact ships from this unit; each firmware cell is its own build | |
 
 ### Phase 9 — Runtime privilege
 
@@ -131,11 +131,11 @@ Evidence; excluded from the totals).
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
-| H-37 | CI runs the hardening gate on every PR | Incomplete | fmt + clippy + test + deny per push; audit / vet / Miri / fuzz not yet; the hardening-table check runs in the fleet gate (`kairos check --harden`), not in CI | |
-| H-38 | Releases signed, attested, and changelogged for security | Incomplete | no release yet | |
+| H-37 | CI runs the hardening gate on every PR | Completed | `.github/workflows/ci.yml`, per push and PR: fmt, clippy `-D warnings`, test (Linux, Windows, macOS), `cargo deny check` (incl. advisories), `cargo vet --locked`, the unsafe census, the README hardening-table `--check`, and a fuzz regression over every seed corpus. Fuzzing, sanitizers and `cargo careful` on the nightly schedule (`scheduled.yml`). Every action pinned to a commit SHA; `permissions: contents: read` | |
+| H-38 | Releases signed, attested, and changelogged for security | Incomplete | release notes call out security changes (`CHANGELOG.md`), but tags and commits are not signed and no provenance is attached; needs the owner's signing key | |
 | H-39 | ★ `SECURITY.md` with a coordinated disclosure process | Completed | `SECURITY.md`: contact, 5-day acknowledgement, 14-day updates, 90-day disclosure | |
-| H-40 | Advisory monitoring and scheduled re-audit | Incomplete | | |
-| H-41 | ★ Residual risks listed and accepted; waivers time-bounded | Incomplete | the register below is empty until the first milestone | |
+| H-40 | Advisory monitoring and scheduled re-audit | Completed | `cargo deny check advisories` nightly (`scheduled.yml`); Dependabot weekly for crates and actions (`.github/dependabot.yml`); the full suite re-runs at every release and no later than the review date in `docs/threat-model.md` §7 (2027-01-01) | |
+| H-41 | ★ Residual risks listed and accepted; waivers time-bounded | Completed | `docs/threat-model.md` §7: six residual risks, each with an owner (the Architect), a severity, why it is accepted and the condition that closes it; reviewed at every release and no later than 2027-01-01 | |
 
 ### Phase 12 — Compliance controls
 
@@ -202,6 +202,7 @@ Append one line per pass; never rewrite history. The trend is the point.
 |---|---|---|---|---|---|
 | 2026-09-09 | survey | kairos (scaffold pass) | 7 / 0 / 28 | 5 | first pass, at stamp time; every Completed row names a file that exists |
 | 2026-09-09 | survey + tool probes | kairos (K1 pass) | 12 / 0 / 24 | 9 | K1: the trace differential against the C kernel is live and is this unit's strongest evidence; deny, audit and Miri run on the developer box |
+| 2026-10-01 | deep | v1.0-readiness pass | 28 / 0 / 6 | 14/16 | vet (25 certified, 27 exempt), stack-builder fuzz target, threat model v1, census + hardening-table + fuzz-regression in CI, ASan/TSan/careful; FOUR defects fixed (Cortex-M `init_stack` unsound as a safe fn; esp-radio heap overflow and dangling creates; host signal handler spoiling errno); UNSAFE.md completed for Xtensa and the Unix host backend |
 
 ## v0.1.0 release decision — which gates are waived, and why (2026-09-16)
 
@@ -227,3 +228,12 @@ H-12 (SBOM), H-13 (no git dependencies), H-14 (dependency freshness).
 This section is the "stated decision in the plan, not silently" that the
 release review asked for. A gate marked Incomplete above and not listed here is
 an omission, not a decision — that distinction is the point.
+
+## v1.0.0 readiness -- what still blocks (2026-10-01)
+
+Every v1.0.0 (★) gate not listed here is Completed with evidence. These remain, and neither is engineering the auditor can do:
+
+- H-10: 27 embedded-ecosystem crates exempted -- the owner decides which publishers to trust (threat model R-1).
+- H-27: thirty nights of `scheduled.yml` -- starts when it is pushed.
+
+Also open, not ★: H-38 (signed tags and attested artifacts need the owner's signing key). The release itself -- version bump, `cargo publish`, the tag -- is the owner's to run.
