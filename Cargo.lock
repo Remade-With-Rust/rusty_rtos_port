@@ -276,55 +276,48 @@ checksum = "8188909339ccc0c68cfb5a04648313f09621e8b87dc03095454f1a11f6c5d436"
 
 [[package]]
 name = "rusty_rtos_core"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a387ececa058fe014bfcdf86851fba7eee77397fbf0fffdb15f720c082a20e7"
+checksum = "0a117a07424de6016d378920f55b41e9a428ed12156bce640e40550385ca45c4"
 
 [[package]]
 name = "rusty_rtos_port"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rusty_rtos_port-core",
 ]
 
 [[package]]
 name = "rusty_rtos_port-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rusty_rtos_core",
 ]
 
 [[package]]
 name = "rusty_rtos_port-cortex-m"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rusty_rtos_core",
 ]
 
 [[package]]
 name = "rusty_rtos_port-esp-radio"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "esp-radio-rtos-driver",
  "rusty_rtos_core",
- "rusty_rtos_port-riscv 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "rusty_rtos_port-xtensa 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rusty_rtos_port-riscv 0.2.0",
+ "rusty_rtos_port-xtensa 0.2.0",
 ]
 
 [[package]]
 name = "rusty_rtos_port-host"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "rusty_rtos_core",
  "windows-sys",
-]
-
-[[package]]
-name = "rusty_rtos_port-riscv"
-version = "0.2.0"
-dependencies = [
- "rusty_rtos_core",
 ]
 
 [[package]]
@@ -337,8 +330,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty_rtos_port-riscv"
+version = "0.2.1"
+dependencies = [
+ "rusty_rtos_core",
+]
+
+[[package]]
 name = "rusty_rtos_port-xtensa"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a6fdbb061939079040cefa64ef270a3bb17440a0a71a0c27e5883db395db4c6"
 dependencies = [
  "rusty_rtos_core",
  "xtensa-lx 0.12.0",
@@ -347,9 +349,7 @@ dependencies = [
 
 [[package]]
 name = "rusty_rtos_port-xtensa"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a6fdbb061939079040cefa64ef270a3bb17440a0a71a0c27e5883db395db4c6"
+version = "0.2.1"
 dependencies = [
  "rusty_rtos_core",
  "xtensa-lx 0.12.0",
