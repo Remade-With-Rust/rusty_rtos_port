@@ -101,6 +101,21 @@ where
     }
 }
 
+/// A create the radio driver cannot be told failed.
+///
+/// `esp-radio-rtos-driver`'s `create` functions return `NonNull`: there is no
+/// failure path, and the closed C driver uses whatever it is handed. Through
+/// 0.2.1 every failure here returned `NonNull::dangling()`, which the driver
+/// then read and wrote through -- undefined behaviour on an out-of-memory or
+/// a full kernel arena. Halting is what Rust's own allocation failure does,
+/// and it is deterministic where the dangling pointer was not. Found by the
+/// hardening audit of 2026-10-01.
+#[cold]
+#[inline(never)]
+fn exhausted(what: &'static str) -> ! {
+    panic!("esp-radio adapter: could not create {what}, and the radio driver has no failure path")
+}
+
 // ----------------------------------------------------------------- tasks --
 
 /// What a `ThreadPtr` points at.
@@ -249,12 +264,12 @@ impl SchedulerImplementation for Scheduler {
         let size = task_stack_size.max(2048);
         let layout = match Layout::from_size_align(size, 16) {
             Ok(l) => l,
-            Err(_) => return NonNull::dangling(),
+            Err(_) => exhausted("a task stack (its size has no valid layout)"),
         };
         // SAFETY: a non-zero layout; the pointer is checked below.
         let stack = unsafe { alloc(layout) };
         if stack.is_null() {
-            return NonNull::dangling();
+            exhausted("a task stack (out of memory)");
         }
 
         let clamped = (priority as u8).min(host().max_priorities().saturating_sub(2));
@@ -306,7 +321,7 @@ impl SchedulerImplementation for Scheduler {
                 drop(Box::from_raw(slot));
                 dealloc(stack, layout);
             }
-            return NonNull::dangling();
+            exhausted("a task (the kernel's task arena is full)");
         }
         NonNull::new(slot.cast::<()>()).unwrap_or(NonNull::dangling())
     }
@@ -349,7 +364,7 @@ impl SchedulerImplementation for Scheduler {
     fn current_task_thread_semaphore(&self) -> SemaphorePtr {
         let slot = self.current_task().as_ptr().cast::<TaskSlot>();
         if slot.is_null() {
-            return NonNull::dangling();
+            exhausted("a thread semaphore (asked for by a task this adapter did not create)");
         }
         // SAFETY: as `schedule_task_deletion`.
         unsafe {
@@ -421,7 +436,7 @@ impl SemaphoreImplementation for Semaphore {
             SemaphoreKind::RecursiveMutex => k.mutex_create_recursive(),
         });
         let Some(handle) = handle else {
-            return NonNull::dangling();
+            exhausted("a semaphore (the kernel's queue arena is full)");
         };
         let boxed = Box::into_raw(Box::new(Sem { handle }));
         NonNull::new(boxed.cast::<()>()).unwrap_or(NonNull::dangling())
@@ -574,14 +589,21 @@ impl Queue {
 
 impl QueueImplementation for Queue {
     fn create(capacity: usize, item_size: usize) -> QueuePtr {
-        let bytes = capacity.saturating_mul(item_size).max(1);
-        let Ok(layout) = Layout::from_size_align(bytes, 8) else {
-            return NonNull::dangling();
+        // Clamped BEFORE the buffer is sized. Through 0.2.1 the buffer was
+        // sized from the raw capacity and the queue stored `capacity.max(1)`,
+        // so a zero-capacity queue got a one-byte buffer and believed it held
+        // an item of `item_size` bytes: the first push overflowed the heap.
+        let capacity = capacity.max(1);
+        let Some(bytes) = capacity.checked_mul(item_size) else {
+            exhausted("a queue (capacity x item size overflows)");
+        };
+        let Ok(layout) = Layout::from_size_align(bytes.max(1), 8) else {
+            exhausted("a queue (its size has no valid layout)");
         };
         // SAFETY: a non-zero layout; checked below.
         let storage = unsafe { alloc(layout) };
         if storage.is_null() {
-            return NonNull::dangling();
+            exhausted("a queue (out of memory)");
         }
         let made = with_kernel(&mut |k: &mut dyn KernelOps| {
             let lock = k.mutex_create()?;
@@ -592,7 +614,7 @@ impl QueueImplementation for Queue {
         let Some((lock, filled, empty)) = made else {
             // SAFETY: `storage` came from `alloc` with this layout.
             unsafe { dealloc(storage, layout) };
-            return NonNull::dangling();
+            exhausted("a queue (the kernel's queue arena is full)");
         };
         let boxed = Box::into_raw(Box::new(Q {
             storage,
@@ -792,7 +814,7 @@ impl WaitQueueImplementation for WaitQueue {
         let Some(sem) =
             with_kernel(&mut |k: &mut dyn KernelOps| k.semaphore_create_counting(64, 0))
         else {
-            return NonNull::dangling();
+            exhausted("a wait queue (the kernel's queue arena is full)");
         };
         let boxed = Box::into_raw(Box::new(WQ { sem, waiters: 0 }));
         NonNull::new(boxed.cast::<()>()).unwrap_or(NonNull::dangling())
@@ -870,7 +892,7 @@ impl TimerImplementation for Timer {
     fn create(function: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> TimerPtr {
         let index = crate::timers::remember(function, data);
         if index == usize::MAX {
-            return NonNull::dangling();
+            exhausted("a radio timer (the timer table is full)");
         }
         let boxed = Box::into_raw(Box::new(T { index }));
         NonNull::new(boxed.cast::<()>()).unwrap_or(NonNull::dangling())
