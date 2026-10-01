@@ -192,6 +192,17 @@ pub unsafe fn switch_context(
     next: *const Context,
     trap_frame: &mut Context,
 ) {
+    // `copy_nonoverlapping`, which LLVM lowers to a call to `memcpy` -- on the
+    // ESP32-S3 the routine in mask ROM. Hand-written in-line copies were
+    // tried against it on the XIAO S3 (`xiao-s3-realtime`, `--features
+    // decompose`, 2026-10-01) and every one LOST:
+    //  - eight words per step, loads before stores: 278 cycles for both
+    //    copies against the ROM's 247 without FP save, 484 against 347 with;
+    //  - two words per step stays a loop at `opt-level = "s"`, ten
+    //    instructions and a taken branch per two words;
+    //  - volatile word accesses get a `memw` each on Xtensa.
+    // The ROM routine is the fast one; leave it.
+    //
     // SAFETY: the contract above. These are plain `Copy` structs, and the
     // exception exit restores whatever is left in `trap_frame`.
     unsafe {
