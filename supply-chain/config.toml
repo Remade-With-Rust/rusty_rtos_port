@@ -1,0 +1,162 @@
+
+# cargo-vet config file
+
+[cargo-vet]
+version = "0.10"
+
+[imports.ariel-os]
+url = "https://raw.githubusercontent.com/ariel-os/ariel-os/main/supply-chain/audits.toml"
+
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.embark-studios]
+url = "https://raw.githubusercontent.com/EmbarkStudios/rust-ecosystem/main/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+[imports.isrg]
+url = "https://raw.githubusercontent.com/divviup/libprio-rs/main/supply-chain/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.zcash]
+url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
+[policy.rusty_rtos_port]
+audit-as-crates-io = false
+notes = "This repository: first-party code, reviewed in this repository."
+
+[policy.rusty_rtos_port-core]
+audit-as-crates-io = false
+notes = "This repository: first-party code, reviewed in this repository."
+
+[policy.rusty_rtos_port-cortex-m]
+audit-as-crates-io = false
+notes = "This repository: first-party code, reviewed in this repository."
+
+[policy.rusty_rtos_port-host]
+audit-as-crates-io = false
+notes = "This repository: first-party code, reviewed in this repository."
+
+[policy."rusty_rtos_port-riscv:0.2.0"]
+
+[policy."rusty_rtos_port-riscv:0.2.1"]
+audit-as-crates-io = false
+notes = "This repository: first-party code, reviewed in this repository."
+
+[policy."rusty_rtos_port-xtensa:0.2.0"]
+
+[policy."rusty_rtos_port-xtensa:0.2.1"]
+audit-as-crates-io = false
+notes = "This repository: first-party code, reviewed in this repository."
+
+[[exemptions.critical-section]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.embassy-sync]]
+version = "0.6.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.embassy-sync]]
+version = "0.7.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.embassy-sync]]
+version = "0.8.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.embedded-hal]]
+version = "1.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.embedded-io-async]]
+version = "0.6.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.embedded-io-async]]
+version = "0.7.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.esp-metadata-generated]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.esp-radio-rtos-driver]]
+version = "0.4.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.esp-sync]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.futures-core]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.futures-sink]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.futures-task]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.futures-util]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.hash32]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.heapless]]
+version = "0.8.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.heapless]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.pin-project-lite]]
+version = "0.2.17"
+criteria = "safe-to-deploy"
+
+[[exemptions.portable-atomic]]
+version = "1.15.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.riscv]]
+version = "0.15.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.riscv-macros]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.riscv-pac]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.stable_deref_trait]]
+version = "1.2.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.xtensa-lx]]
+version = "0.12.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.xtensa-lx]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.xtensa-lx-rt]]
+version = "0.23.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.xtensa-lx-rt-proc-macros]]
+version = "0.5.0"
+criteria = "safe-to-deploy"

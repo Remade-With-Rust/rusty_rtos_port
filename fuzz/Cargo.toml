@@ -1,0 +1,32 @@
+[package]
+name = "rusty_rtos_port-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Coverage-guided fuzzing of the ports' unsafe stack initialisation (hardening gates H-26/H-27)."
+
+# Test tooling, never shipped: `libfuzzer-sys` builds libFuzzer, which is C++.
+# This is its own workspace, so none of it reaches the ports' dependency
+# graph, their `cargo vet` / `cargo deny` scope, or tools/no-c-audit.sh.
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rusty_rtos_port-xtensa = { path = "../crates/rusty_rtos_port-xtensa" }
+rusty_rtos_port-riscv = { path = "../crates/rusty_rtos_port-riscv" }
+rusty_rtos_port-cortex-m = { path = "../crates/rusty_rtos_port-cortex-m" }
+
+[[bin]]
+name = "task_stacks"
+path = "fuzz_targets/task_stacks.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
