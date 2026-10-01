@@ -404,6 +404,17 @@ mod backend {
         TABLE.iter().find(|e| e.tid.load(Ordering::Acquire) == tid)
     }
 
+    /// A `pthread_t` as the table's `usize`. It is `usize` on Apple and `u64`
+    /// on Linux, so the cast is needed on one and a no-op on the other;
+    /// clippy's `unnecessary_cast` sees only the platform it is run on.
+    #[allow(
+        clippy::unnecessary_cast,
+        reason = "pthread_t is usize on Apple, u64 on Linux"
+    )]
+    fn tid_of(t: libc::pthread_t) -> usize {
+        t as usize
+    }
+
     /// Park this thread until someone thaws it. `SIGUSR1`.
     #[expect(
         unsafe_code,
@@ -417,7 +428,7 @@ mod backend {
         let _errno = SavedErrno::take();
         // SAFETY: `pthread_self` reads the calling thread's own id and is
         // async-signal-safe.
-        let me = unsafe { libc::pthread_self() } as usize;
+        let me = tid_of(unsafe { libc::pthread_self() });
         let Some(entry) = entry_of(me) else {
             // Not a task thread, or its entry was released while the
             // signal was in flight. Either way there is nobody to wait
@@ -491,9 +502,9 @@ mod backend {
     /// behaviour rather than failing to build.
     #[expect(unsafe_code, reason = "the C runtime's errno accessor is an extern fn")]
     fn errno_location() -> Option<*mut core::ffi::c_int> {
-        // SAFETY: each accessor takes no arguments and returns this
-        // thread's errno slot; all are async-signal-safe.
         #[cfg(any(target_os = "linux", target_os = "android"))]
+        // SAFETY: takes no arguments, returns this thread's errno slot, and
+        // is async-signal-safe.
         return Some(unsafe { libc::__errno_location() });
         #[cfg(any(
             target_os = "macos",
@@ -501,8 +512,10 @@ mod backend {
             target_os = "freebsd",
             target_os = "dragonfly"
         ))]
+        // SAFETY: as above; this platform's name for the same accessor.
         return Some(unsafe { libc::__error() });
         #[cfg(any(target_os = "openbsd", target_os = "netbsd"))]
+        // SAFETY: as above; this platform's name for the same accessor.
         return Some(unsafe { libc::__errno() });
         #[allow(unreachable_code)]
         None
@@ -554,7 +567,7 @@ mod backend {
         use std::os::unix::thread::JoinHandleExt as _;
 
         install_handlers();
-        let tid = join.as_pthread_t() as usize;
+        let tid = tid_of(join.as_pthread_t());
         if tid == 0 {
             return 0;
         }
