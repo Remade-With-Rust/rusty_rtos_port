@@ -162,30 +162,53 @@ non-Windows platform, which stopped being true when the Unix backend landed;
 
 ## `rusty_rtos_port-esp-radio`
 
-**The one crate in the family whose `unsafe` is NOT fenced item by item.** It
-does not inherit the workspace lints, so `unsafe_code` is not denied in it,
-and nothing forced its `unsafe` into `#[expect]` fences. Found by the census
-on 2026-10-01; recorded here rather than hidden, with the count pinned so a
-new site fails CI until it is written up.
+The glue between this kernel and Espressif's `esp-radio-rtos-driver` 0.4.2,
+whose traits a closed C radio driver calls through. **Fenced item by item
+since 2026-10-01**: the crate inherits the workspace lints (`[lints]
+workspace = true`), so `unsafe_code` is denied and every site compiles only
+under an `#[expect(unsafe_code, reason)]` named below. Until then it was the
+one crate in the family that opted out, and this section carried a pinned
+count of 105 unfenced sites instead of an inventory.
 
-**Unfenced: 105 `unsafe` sites.**
+Most of the `unsafe fn`s are REQUIRED by the driver's trait signatures
+(`SemaphoreImplementation::take`, `QueueImplementation::send_to_back`, ...);
+those are fenced on the `impl`, which owns them.
 
-It has not been published to crates.io (the 0.2.1 release left it out), and
-it is the glue between this kernel and Espressif's `esp-radio-rtos-driver`
-0.4.2, whose traits a closed C radio driver calls through. By file:
+### 1. Task slots and stacks (`adapter.rs`)
 
-| file | sites | what the `unsafe` is | why it is sound, in summary |
-|---|---|---|---|
-| `adapter.rs` | 56 blocks, 32 `unsafe fn`, 1 `extern` | The five `esp-radio-rtos-driver` trait impls. Most of the `unsafe fn`s are REQUIRED by the trait's signatures (`SemaphoreImplementation::take`, `QueueImplementation::send_to_back`, ...). The blocks: task slots kept as `*mut TaskSlot` in a `static mut` table indexed by kernel task index, and read by the switching interrupt; heap-allocated task stacks and queue payload buffers (`alloc`/`dealloc` with the stored `Layout`); `copy_nonoverlapping` of `item_size` bytes into and out of those buffers. | Verified in the 2026-10-01 pass: every slot pointer comes from a `Box::into_raw` this module made; the table is WRITTEN inside `with_kernel`, with interrupts masked, and read elsewhere only as single aligned pointer loads on one core; a queue's buffer holds `capacity * item_size` bytes and every copy is `item_size` bytes at an index below `capacity`. **Two defects found and fixed in that pass:** a zero-capacity queue got a one-byte buffer while believing it held one `item_size` item (a heap overflow on the first push; the capacity is now clamped before the buffer is sized, and the product is `checked_mul`); and every create that failed returned `NonNull::dangling()` to a driver with no failure path, which then used it (now `exhausted()`: a halt naming what ran out). **+5 on 2026-10-01, when the real radio first ran on it (`firmware/xiao-s3-wifi`):** `register_kernel_task` allocates a stack and builds a context for `IDLE` and `Tmr Svc` (two blocks, the same contract as `task_create`'s); and the queue was REWRITTEN after silicon showed its ring was unprotected against the radio's interrupt -- it was guarded by a kernel mutex, which an interrupt cannot take, so an interrupt `push` could land between a task's read of `tail` and its write. Every ring mutation now runs under `Critical` (the interrupt mask), the interrupt-side send reserves a slot through `empty` like any other sender, and `pop` accepts a null destination for `remove` (three blocks, the semaphore-handle reads). |
-| `timers.rs` | 7 blocks, 1 `unsafe fn`, 2 `extern` | A fixed `static mut` table of radio timers; calling the radio's C callbacks with their data pointer. | Every table index is checked against `MAX_RADIO_TIMERS` before use; a callback is called exactly as the driver registered it, with the pointer it registered. Who may touch the table concurrently is argued at its definition, not re-audited in this pass. |
-| `port.rs` | 3 blocks, 2 `unsafe fn` | Forwarding to the per-architecture `new_task_context`; on Xtensa, a `transmute` of the wrapper from `extern "C" fn(usize, usize) -> !` to `extern "C" fn(usize, usize)`. | The forwards carry the callee's own contract (documented `unsafe fn`). The transmute changes only the return type to one the callee will never see used: the wrapper never returns, and the two types share an ABI. |
-| `lib.rs` | 1 block | Reading the installed `&'static dyn RadioHost` back out of its slot. | The slot is written once, from a value of that exact type, before the radio starts. |
+| item | what it does | why it is sound |
+|---|---|---|
+| `register_slot` | writes a `*mut TaskSlot` into the `static mut SLOTS` table at the kernel's task index | Every writer runs inside `with_kernel`, with interrupts masked, on one core; the index is below `SLOT_CAPACITY` because `install` refuses a host holding more tasks, and the write goes through `as_mut()` on an in-bounds pointer. |
+| `context_of` / `handle_for` | one aligned pointer load from `SLOTS`, then a field of the slot it names | Every non-null entry came from a `Box::into_raw` this module made and is cleared before the box is freed. `handle_for` checks the index against `SLOT_CAPACITY` first. |
+| `register_kernel_task` | `alloc`s a stack for `IDLE` / `Tmr Svc` and builds its first frame with `new_task_context` | A non-zero layout, the pointer checked for null; the frame is built at `stack + size`, one past the end of the allocation; the kernel never deletes its own tasks, so the stack is never freed. |
+| `task_entry` | `transmute`s the `usize` the radio handed `task_create` back into `extern "C" fn(*mut c_void)` | The value WAS that function pointer: `task_create` stored `task as *const () as usize`, and a function pointer round-trips through `usize` on every target this crate builds for. |
+| `Scheduler` (`impl SchedulerImplementation`) | the trait's `task_priority` / `set_task_priority` are `unsafe fn`; `current_task` reads `SLOTS`; `task_create` `alloc`s a stack, builds its frame, writes the slot's handle and on failure frees both; `schedule_task_deletion` frees a deleted task's slot and stack; `current_task_thread_semaphore` reads and fills a slot | Every `ThreadPtr` this adapter issues points at a `TaskSlot` it leaked from a `Box`. A slot is freed only after the kernel deleted its task AND it is not the caller (a task deleting itself leaves its slot and stack for reuse, because it is standing on that stack). `task_create` registers the slot in the same masked region as `create_task`, so the switching interrupt never finds a chosen task without a context. |
 
-**Residual (port threat model R-6):** fence each site with an
-`#[expect(unsafe_code, reason)]` and a row here, by inheriting the workspace
-lints (`[lints] workspace = true`). Not done in the 2026-10-01 pass, because
-the crate is built only inside the Janus firmware, and changing its lint set
-would have to be verified there.
+### 2. Semaphores, queues and wait queues (`adapter.rs`)
+
+| item | what it does | why it is sound |
+|---|---|---|
+| `Semaphore` (`impl SemaphoreImplementation`) | reads the kernel handle out of the `Sem` a `SemaphorePtr` points at; `delete` reclaims the box | Every `SemaphorePtr` came from `create`'s `Box::into_raw`; the driver's contract is that it is live until `delete`, after which it is not used. |
+| `Queue::push` / `Queue::pop` | `copy_nonoverlapping` of `item_size` bytes into / out of the ring | Run under `Critical` (the interrupt mask the radio's interrupt also runs behind), so no other writer exists. The ring holds `capacity * item_size` bytes (`checked_mul`, `capacity >= 1`), every index is below `capacity`, and the caller reserved the slot (`empty`) or claimed the item (`filled`) first. The arithmetic is fenced with them, with the same reason. |
+| `Queue` (`impl QueueImplementation`) | the trait's methods are `unsafe fn`; `create` `alloc`s the ring, `delete` frees it with the stored layout; the bodies read the two semaphore handles out of `Q` | As `Semaphore`. A zero-capacity request is clamped to one BEFORE the ring is sized -- the 2026-10-01 pass found a one-byte ring believed to hold one item. |
+| `send` / `receive_inner` | the blocking send and receive under the trait methods | The caller's contract (`queue` live, `item` readable / writable for `item_size`), then `push` / `pop` under a reserved slot or claimed item. |
+| `WaitQueue` (`impl WaitQueueImplementation`) | reads and updates `waiters` and the semaphore handle in the `WQ` a pointer names | As `Semaphore`. `waiters` is changed only under `Critical`: until the 2026-10-01 lint pass it was a bare `+= 1` that a tick could preempt between load and store, losing a registration and leaving a waiter `notify` never released. |
+| `Timer` (`impl TimerImplementation`) | reads the table index out of the `T` a `TimerPtr` names | As `Semaphore`; the index is checked again by every `timers` function. |
+
+### 3. The radio timer table (`timers.rs`)
+
+| item | what it does | why it is sound |
+|---|---|---|
+| `table` | the raw pointer to the `static mut TIMERS` array | Every caller holds a live `Critical` for as long as it uses the pointer, on one core. |
+| `remember` / `forget` / `arm` / `disarm` / `active` | read or write one slot | Each takes `Critical` on its first line and checks the index against `MAX_RADIO_TIMERS` (`remember` scans `0..MAX_RADIO_TIMERS`). |
+| `service_timers` | copies a due timer's callback and data out under the mask, then calls the callback OUTSIDE it | The pair is exactly what `TimerImplementation::create` registered, and the radio keeps both valid until it deletes the timer -- which clears `used` under the same mask that read them. The call is outside the mask because a radio callback may block. |
+
+### 4. Forwards (`port.rs`, `lib.rs`)
+
+| item | what it does | why it is sound |
+|---|---|---|
+| `new_task_context` | forwards to the selected port's `new_task_context`; on Xtensa first `transmute`s the trampoline from `extern "C" fn(usize, usize) -> !` to `extern "C" fn(usize, usize)` | The forward carries the callee's documented contract. The transmute changes only the return type: same ABI, same arguments, and the pointee never returns, so the `()` the port believes it may receive is never produced. |
+| `host` | reads the installed `&'static dyn RadioHost` back out of its `AtomicPtr` | The pointer was produced by `install` from a leaked `&'static &'static dyn RadioHost`, and is checked non-null first. |
 
 ## `rusty_rtos_port-xtensa`
 

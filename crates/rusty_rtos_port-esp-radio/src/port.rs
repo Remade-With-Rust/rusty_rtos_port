@@ -46,6 +46,7 @@ pub type Trampoline = extern "C" fn(task_fn: usize, param: usize) -> !;
 /// aligned stack that outlives the task, and must not be shared with another
 /// task.
 #[cfg(feature = "riscv")]
+#[expect(unsafe_code, reason = "forwards the port's own `unsafe fn`")]
 pub unsafe fn new_task_context(
     wrapper: Trampoline,
     task_fn: usize,
@@ -63,6 +64,10 @@ pub unsafe fn new_task_context(
 /// aligned stack that outlives the task, and must not be shared with another
 /// task.
 #[cfg(feature = "xtensa")]
+#[expect(
+    unsafe_code,
+    reason = "forwards the port's own `unsafe fn`, adapting the trampoline's type"
+)]
 pub unsafe fn new_task_context(
     wrapper: Trampoline,
     task_fn: usize,

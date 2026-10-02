@@ -3,6 +3,26 @@
 Security-relevant changes are called out under **Security** (hardening gate
 H-38). Versions follow SemVer; in 0.x a minor bump may break the API.
 
+## `rusty_rtos_port-esp-radio` 0.3.0 — 2026-10-01 (first publish)
+
+The rest of the family is unchanged at 0.3.0; this is the radio glue's first
+release, at the family version.
+
+### Security
+- The crate inherits the workspace lints. Every `unsafe` is fenced with an
+  `#[expect(unsafe_code, reason)]` on its owning item and written up in
+  `UNSAFE.md`; the "Unfenced: 105" declaration is gone (threat model R-6,
+  closed).
+- `WaitQueue`: the waiter count was a bare read-modify-write a tick could
+  preempt, losing a registration and leaving a waiter that `notify` never
+  released. It is now updated under the interrupt mask.
+- Arithmetic is `checked_*` or saturating (`max_task_priority` no longer
+  underflows on a host with fewer than two priorities); the ring index math
+  states its bound in an `#[expect]`.
+
+### Changed
+- Depends on `rusty_rtos_port-xtensa` / `-riscv` 0.3.0.
+
 ## 0.3.0 — 2026-10-01 (breaking)
 
 ### Security

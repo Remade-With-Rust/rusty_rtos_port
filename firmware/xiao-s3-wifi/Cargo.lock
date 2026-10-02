@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "rusty_rtos_kernel-core"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "rusty_rtos_core",
 ]
@@ -1473,18 +1473,7 @@ version = "0.3.0"
 dependencies = [
  "esp-radio-rtos-driver",
  "rusty_rtos_core",
- "rusty_rtos_port-xtensa 0.2.1",
-]
-
-[[package]]
-name = "rusty_rtos_port-xtensa"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa4da07390dca30ebab83696d58963e2dc92914f363238c1ff6def9580ed0e9b"
-dependencies = [
- "rusty_rtos_core",
- "xtensa-lx 0.12.0",
- "xtensa-lx-rt",
+ "rusty_rtos_port-xtensa",
 ]
 
 [[package]]
@@ -1824,7 +1813,7 @@ dependencies = [
  "rusty_rtos_heap-core",
  "rusty_rtos_kernel-core",
  "rusty_rtos_port-esp-radio",
- "rusty_rtos_port-xtensa 0.3.0",
+ "rusty_rtos_port-xtensa",
 ]
 
 [[package]]

@@ -66,6 +66,7 @@ static mut TIMERS: [RadioTimer; MAX_RADIO_TIMERS] = [EMPTY; MAX_RADIO_TIMERS];
 /// pointer is used, and there must be one core. Both hold everywhere in this
 /// module: every caller takes the guard on its first line.
 #[inline]
+#[expect(unsafe_code, reason = "the accessor every table use goes through")]
 unsafe fn table() -> *mut RadioTimer {
     (&raw mut TIMERS).cast::<RadioTimer>()
 }
@@ -74,6 +75,7 @@ unsafe fn table() -> *mut RadioTimer {
 ///
 /// [`usize::MAX`] when the table is full, which is the one value that is
 /// never a valid index, so a caller cannot mistake it for one.
+#[expect(unsafe_code, reason = "a scan of the timer table")]
 pub(crate) fn remember(callback: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> usize {
     let _guard = Critical::enter();
     // SAFETY: the guard is live for this whole block and there is one core,
@@ -100,6 +102,7 @@ pub(crate) fn remember(callback: unsafe extern "C" fn(*mut c_void), data: *mut c
 
 /// Release a slot. An out-of-range index is ignored rather than trapping:
 /// the driver deletes timers it may never have successfully created.
+#[expect(unsafe_code, reason = "one write to the timer table")]
 pub(crate) fn forget(index: usize) {
     if index >= MAX_RADIO_TIMERS {
         return;
@@ -114,6 +117,7 @@ pub(crate) fn forget(index: usize) {
 }
 
 /// Arm a slot to fire `timeout_us` from now, once or repeatedly.
+#[expect(unsafe_code, reason = "one write to the timer table")]
 pub(crate) fn arm(index: usize, timeout_us: u64, periodic: bool) {
     if index >= MAX_RADIO_TIMERS {
         return;
@@ -133,6 +137,7 @@ pub(crate) fn arm(index: usize, timeout_us: u64, periodic: bool) {
 }
 
 /// Disarm a slot without releasing it.
+#[expect(unsafe_code, reason = "one write to the timer table")]
 pub(crate) fn disarm(index: usize) {
     if index >= MAX_RADIO_TIMERS {
         return;
@@ -145,6 +150,7 @@ pub(crate) fn disarm(index: usize) {
 }
 
 /// Whether a slot is armed.
+#[expect(unsafe_code, reason = "one read of the timer table")]
 pub(crate) fn active(index: usize) -> bool {
     if index >= MAX_RADIO_TIMERS {
         return false;
@@ -164,8 +170,12 @@ pub(crate) fn active(index: usize) -> bool {
 /// A periodic timer's next due time is set from *now*, not from the previous
 /// due time, so a late service does not then fire a burst catching up. That
 /// matches what the C driver's timer task does.
+#[expect(
+    unsafe_code,
+    reason = "reads the table, then calls the radio's C callback"
+)]
 pub fn service_timers() -> u32 {
-    let mut fired = 0;
+    let mut fired: u32 = 0;
     let now = crate::host().now_us();
     for i in 0..MAX_RADIO_TIMERS {
         let due = {
@@ -191,7 +201,7 @@ pub fn service_timers() -> u32 {
             // the radio keeps both valid until it deletes the timer — which
             // clears `used` under the same mask that read them.
             unsafe { cb(data) };
-            fired += 1;
+            fired = fired.saturating_add(1);
         }
     }
     fired

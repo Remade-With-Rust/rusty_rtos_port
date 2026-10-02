@@ -71,7 +71,7 @@ Evidence; excluded from the totals).
 |---|---|---|---|---|
 | H-15 | ★ Workspace lint policy set and clean | Completed | `[workspace.lints]` as the family's; `cargo clippy --workspace --all-targets -- -D warnings` clean | |
 | H-16 | ★ `unsafe` isolated, SAFETY-commented, inventoried | Completed | `forbid(unsafe_code)`; `UNSAFE.md` lists none. This is the package that will eventually hold the family's only `unsafe` — at the context switch and the vector table — and it holds none today | |
-| H-17 | Arithmetic safety explicit | Incomplete | six of the seven crates inherit `arithmetic_side_effects` under CI's `-D warnings`, with every allowed site reasoned; `rusty_rtos_port-esp-radio` does not inherit the workspace lints (threat model R-6). Its queue sizing is now `checked_mul` | |
+| H-17 | Arithmetic safety explicit | Completed | all seven crates inherit `arithmetic_side_effects` under CI's `-D warnings`, with every allowed site reasoned; `rusty_rtos_port-esp-radio` joined on 2026-10-01 (threat model R-6, closed): its arithmetic is saturating or `checked_*`, and the ring index math in `Queue::push`/`pop` carries an `#[expect]` stating the bound | |
 | H-18 | ★ No `unwrap`/`expect`/panic on untrusted paths; typed errors | Completed | `unwrap_used`, `expect_used`, `panic` = deny at the workspace; tests opt out per file | |
 | H-19 | Input validation — external bytes treated as hostile | Completed | the unit parses no bytes; its untrusted inputs are raw stack pointers and sizes, each an `unsafe fn` contract checked by `fuzz/task_stacks`. The esp-radio queue now clamps and `checked_mul`s its sizes (a heap overflow on zero capacity, fixed 2026-10-01) | |
 | H-20 | ★ Secrets zeroized; never logged | Completed | `docs/threat-model.md` §5: no key material enters the ports by design and nothing is logged; the register state they copy is stated, with the un-wiped context of a deleted task as residual R-3 | |
@@ -203,6 +203,7 @@ Append one line per pass; never rewrite history. The trend is the point.
 | 2026-09-09 | survey | kairos (scaffold pass) | 7 / 0 / 28 | 5 | first pass, at stamp time; every Completed row names a file that exists |
 | 2026-09-09 | survey + tool probes | kairos (K1 pass) | 12 / 0 / 24 | 9 | K1: the trace differential against the C kernel is live and is this unit's strongest evidence; deny, audit and Miri run on the developer box |
 | 2026-10-01 | deep | v1.0-readiness pass | 28 / 0 / 6 | 14/16 | vet (25 certified, 27 exempt), stack-builder fuzz target, threat model v1, census + hardening-table + fuzz-regression in CI, ASan/TSan/careful; FOUR defects fixed (Cortex-M `init_stack` unsound as a safe fn; esp-radio heap overflow and dangling creates; host signal handler spoiling errno); UNSAFE.md completed for Xtensa and the Unix host backend |
+| 2026-10-01 | deep | esp-radio lint pass | 29 / 0 / 5 | 14/16 | `rusty_rtos_port-esp-radio` inherits the workspace lints: every `unsafe` fenced and inventoried, threat model R-6 closed, H-17 Completed; a FIFTH defect fixed (`WaitQueue` waiter count updated outside the mask); silicon re-run of `xiao-s3-wifi` stage 1 and `xiao-s3-radio` |
 
 ## v0.1.0 release decision — which gates are waived, and why (2026-09-16)
 

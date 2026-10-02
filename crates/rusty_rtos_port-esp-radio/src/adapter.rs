@@ -70,7 +70,10 @@ use crate::{Blocked, Critical, KernelOps, host, with_kernel};
 /// would have got timeouts ten times too short, silently, with every type
 /// checking out.
 fn ticks_from_us(us: u64) -> u64 {
-    let us_per_tick = 1_000_000 / u64::from(host().tick_hz().max(1));
+    // A zero rate reads as 1 Hz, as `max(1)` did here before the lints.
+    let us_per_tick = 1_000_000u64
+        .checked_div(u64::from(host().tick_hz()))
+        .unwrap_or(1_000_000);
     us.div_ceil(us_per_tick.max(1))
 }
 
@@ -112,6 +115,10 @@ where
 /// hardening audit of 2026-10-01.
 #[cold]
 #[inline(never)]
+#[expect(
+    clippy::panic,
+    reason = "the driver's create functions have no failure path; a named halt is the only honest answer"
+)]
 fn exhausted(what: &'static str) -> ! {
     panic!("esp-radio adapter: could not create {what}, and the radio driver has no failure path")
 }
@@ -127,9 +134,11 @@ pub mod isr_stats {
     use core::sync::atomic::AtomicU32;
     /// `try_send_to_back_from_isr` calls, and how many found the queue full.
     pub static QUEUE_SENDS: AtomicU32 = AtomicU32::new(0);
+    /// Of [`QUEUE_SENDS`], how many found the queue full.
     pub static QUEUE_FULL: AtomicU32 = AtomicU32::new(0);
     /// `try_give_from_isr` calls, and how many the kernel refused.
     pub static SEM_GIVES: AtomicU32 = AtomicU32::new(0);
+    /// Of [`SEM_GIVES`], how many the kernel refused.
     pub static SEM_REFUSED: AtomicU32 = AtomicU32::new(0);
     /// `yield_task_from_isr` calls.
     pub static YIELDS: AtomicU32 = AtomicU32::new(0);
@@ -156,6 +165,7 @@ pub struct TaskSlot {
 static mut SLOTS: [*mut TaskSlot; MAX_TASKS] = [core::ptr::null_mut(); MAX_TASKS];
 
 /// Record a slot against its kernel index.
+#[expect(unsafe_code, reason = "one write into the slot table")]
 fn register_slot(handle: TaskHandle, slot: *mut TaskSlot) {
     let index = handle.index() as usize;
     // SAFETY: single core; every writer masks interrupts through
@@ -172,6 +182,7 @@ fn register_slot(handle: TaskHandle, slot: *mut TaskSlot) {
 ///
 /// `None` for a kernel task with no slot — the idle and timer tasks, which
 /// this cell never gives stacks to because nothing ever switches to them.
+#[expect(unsafe_code, reason = "one read of the slot table")]
 pub fn context_of(handle: TaskHandle) -> Option<*mut Context> {
     let index = handle.index() as usize;
     // SAFETY: as `register_slot`.
@@ -213,6 +224,10 @@ pub fn register_main(handle: TaskHandle) {
 /// `body` must never return.
 ///
 /// [`Kernel::start_scheduler`]: https://docs.rs/rusty_rtos_kernel-core
+#[expect(
+    unsafe_code,
+    reason = "allocating a stack and building its first frame"
+)]
 pub fn register_kernel_task(
     handle: TaskHandle,
     body: extern "C" fn(*mut c_void),
@@ -243,6 +258,7 @@ pub fn register_kernel_task(
 }
 
 /// The handle for a task index, if this cell gave that index a context.
+#[expect(unsafe_code, reason = "one read of the slot table")]
 pub fn handle_for(index: u32) -> Option<TaskHandle> {
     let index = index as usize;
     if index >= MAX_TASKS {
@@ -264,6 +280,10 @@ pub fn handle_for(index: u32) -> Option<TaskHandle> {
 /// The blob's entry point is `extern "C" fn(*mut c_void)` and must not
 /// return; if it ever does, the task deletes itself rather than running off
 /// the end of a stack that has nothing beneath it.
+#[expect(
+    unsafe_code,
+    reason = "turning the driver's entry point back into a fn pointer"
+)]
 extern "C" fn task_entry(task_fn: usize, param: usize) -> ! {
     // SAFETY: `task_fn` is the pointer the radio handed `task_create`, whose
     // type the driver fixes as `extern "C" fn(*mut c_void)`.
@@ -279,6 +299,10 @@ extern "C" fn task_entry(task_fn: usize, param: usize) -> ! {
 /// The scheduler the radio runs on.
 pub struct Scheduler;
 
+#[expect(
+    unsafe_code,
+    reason = "the trait's priority methods are `unsafe fn`; the bodies read task slots"
+)]
 impl SchedulerImplementation for Scheduler {
     fn initialized(&self) -> bool {
         host().scheduler_started()
@@ -308,7 +332,7 @@ impl SchedulerImplementation for Scheduler {
         // One below the configured ceiling: the top priority belongs to the
         // timer daemon, and a radio task that outranked it would starve the
         // software timers the radio itself arms.
-        u32::from(host().max_priorities()) - 2
+        u32::from(host().max_priorities()).saturating_sub(2)
     }
 
     fn task_create(
@@ -469,7 +493,7 @@ impl SchedulerImplementation for Scheduler {
     fn usleep_until(&self, target: u64) {
         let now = host().now_us();
         if target > now {
-            self.usleep((target - now).min(u64::from(u32::MAX)) as u32);
+            self.usleep(target.saturating_sub(now).min(u64::from(u32::MAX)) as u32);
         }
     }
 
@@ -485,8 +509,13 @@ struct Sem {
     handle: QueueHandle,
 }
 
+/// The radio's semaphores and mutexes, each one a kernel semaphore.
 pub struct Semaphore;
 
+#[expect(
+    unsafe_code,
+    reason = "the trait's methods are `unsafe fn` over a handle the driver owns"
+)]
 impl SemaphoreImplementation for Semaphore {
     fn create(kind: SemaphoreKind) -> SemaphorePtr {
         let handle = with_kernel(&mut |k: &mut dyn KernelOps| match kind {
@@ -617,6 +646,8 @@ struct Q {
     len: usize,
 }
 
+/// The radio's queues: a heap ring guarded by the mask, blocking on two
+/// kernel semaphores.
 pub struct Queue;
 
 impl Queue {
@@ -625,6 +656,11 @@ impl Queue {
     /// # Safety
     /// `q` must be live, `item` must point at `item_size` readable bytes, and
     /// the caller must have reserved a slot (taken `empty`).
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "`capacity >= 1`, `head`/`tail` stay below it, `len < capacity` because a slot was reserved, and `index * item_size` is below the `checked_mul` product `create` sized the ring with"
+    )]
+    #[expect(unsafe_code, reason = "a byte copy into the ring")]
     unsafe fn push(q: *mut Q, item: *const u8, front: bool) {
         let _mask = Critical::enter();
         // SAFETY: the caller's contract; the mask excludes every other writer.
@@ -649,6 +685,11 @@ impl Queue {
     /// # Safety
     /// As [`Queue::push`], with `item` null or writable for `item_size`, and
     /// the caller must have claimed an item (taken `filled`).
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "`capacity >= 1`, `head` stays below it, `len >= 1` because an item was claimed, and `at * item_size` is below the `checked_mul` product `create` sized the ring with"
+    )]
+    #[expect(unsafe_code, reason = "a byte copy out of the ring")]
     unsafe fn pop(q: *mut Q, item: *mut u8) {
         let _mask = Critical::enter();
         // SAFETY: as `push`.
@@ -665,6 +706,10 @@ impl Queue {
     }
 }
 
+#[expect(
+    unsafe_code,
+    reason = "the trait's methods are `unsafe fn` over a pointer the driver owns"
+)]
 impl QueueImplementation for Queue {
     fn create(capacity: usize, item_size: usize) -> QueuePtr {
         // A zero-capacity queue would be a zero-sized ring that every send
@@ -844,6 +889,7 @@ impl QueueImplementation for Queue {
 ///
 /// # Safety
 /// `queue` live, `item` readable for the queue's item size.
+#[expect(unsafe_code, reason = "reads the queue the caller vouches for")]
 unsafe fn send(queue: QueuePtr, item: *const u8, ticks: u64, front: bool) -> bool {
     let q = queue.as_ptr().cast::<Q>();
     // SAFETY: the caller's contract.
@@ -861,6 +907,7 @@ unsafe fn send(queue: QueuePtr, item: *const u8, ticks: u64, front: bool) -> boo
 ///
 /// # Safety
 /// `queue` live, `item` writable for the queue's item size.
+#[expect(unsafe_code, reason = "reads the queue the caller vouches for")]
 unsafe fn receive_inner(queue: QueuePtr, item: *mut u8, ticks: u64) -> bool {
     let q = queue.as_ptr().cast::<Q>();
     // SAFETY: the caller's contract.
@@ -885,8 +932,13 @@ struct WQ {
     waiters: usize,
 }
 
+/// The radio's wait queues: a counting semaphore plus a waiter count.
 pub struct WaitQueue;
 
+#[expect(
+    unsafe_code,
+    reason = "the trait's methods are `unsafe fn` over a pointer the driver owns"
+)]
 impl WaitQueueImplementation for WaitQueue {
     fn create() -> WaitQueuePtr {
         let Some(sem) =
@@ -909,13 +961,21 @@ impl WaitQueueImplementation for WaitQueue {
 
     unsafe fn wait_until(queue: WaitQueuePtr, deadline_instant: Option<u64>) {
         let wq = queue.as_ptr().cast::<WQ>();
-        // SAFETY: a live pointer from `create`.
-        let sem = unsafe {
-            (*wq).waiters += 1;
-            (*wq).sem
+        // Under the mask: `waiters` is a read-modify-write, and a tick can
+        // preempt one waiting task between its load and its store while
+        // another task registers -- one registration lost, one waiter never
+        // released by `notify`.
+        let sem = {
+            let _mask = Critical::enter();
+            // SAFETY: a live pointer from `create`.
+            unsafe {
+                (*wq).waiters = (*wq).waiters.saturating_add(1);
+                (*wq).sem
+            }
         };
         let ticks = ticks_until(deadline_instant);
         block_on(move |k: &mut dyn KernelOps| k.semaphore_take(sem, ticks));
+        let _mask = Critical::enter();
         // SAFETY: as above.
         unsafe {
             (*wq).waiters = (*wq).waiters.saturating_sub(1);
@@ -964,8 +1024,14 @@ struct T {
     index: usize,
 }
 
+/// The radio's timers, held in this crate's table and fired by
+/// [`service_timers`](crate::service_timers).
 pub struct Timer;
 
+#[expect(
+    unsafe_code,
+    reason = "the trait's methods are `unsafe fn` over a pointer the driver owns"
+)]
 impl TimerImplementation for Timer {
     fn create(function: unsafe extern "C" fn(*mut c_void), data: *mut c_void) -> TimerPtr {
         let index = crate::timers::remember(function, data);

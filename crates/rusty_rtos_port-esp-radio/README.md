@@ -11,10 +11,11 @@ the five [`esp-radio-rtos-driver`](https://crates.io/crates/esp-radio-rtos-drive
 implementations — scheduler, semaphores, queues, timers, wait queues — as a
 crate rather than glue inside one firmware.
 
-**Status: complete and consumed.** All five implementations are wired and the
-`xiao-s3-radio` cell now depends on this crate instead of carrying its own
-copy. It has **not been re-run on silicon since the extraction** — see
-*What works today*, which is the honest line and not the hopeful one.
+**Status: complete, consumed, and re-run on silicon.** All five
+implementations are wired; `xiao-s3-radio` and `xiao-s3-wifi` depend on this
+crate, and on 2026-10-01 the real `esp-radio` Wi-Fi stack scanned 15 access
+points through it on a XIAO ESP32-S3. Connecting to a network (stage 2) has
+not been run yet — see *What works today*.
 
 ## Why it exists
 
@@ -39,7 +40,9 @@ Two copies of a driver adapter that drift is the failure this avoids.
 | architecture selection — `Context`, `new_task_context`, `Trampoline`, `raise_switch` | ✅ feature-gated `xtensa` / `riscv` |
 | the **adapter body** — `Scheduler`, `Semaphore`, `Queue`, `Timer`, `WaitQueue` | ✅ wired, clippy-clean on both arms |
 | the **timer table** — `service_timers` | ✅ moved into the crate; the consumer must call it |
-| **re-run on silicon** | ❌ not since the extraction — the cell passed on 2026-09-11 as firmware-local glue |
+| **re-run on silicon** | ✅ 2026-10-01: `xiao-s3-radio` 50/50 hand-offs through the driver's semaphores; `xiao-s3-wifi` stage 1, a real `esp-radio` scan, 15 APs, with the radio's interrupt side exercised (115 queue sends from interrupt, 0 full) |
+| **Wi-Fi association (stage 2) and MQTT over it (stage 3)** | ⬜ not run: both need a network's credentials at build time |
+| `unsafe` | every site fenced on its owning item and written up in the port's `UNSAFE.md`; the crate inherits the workspace lints |
 
 Built and clippy-clean for `xtensa-esp32s3-none-elf` and
 `riscv32imac-unknown-none-elf`, and for a default-feature build with no
@@ -52,9 +55,9 @@ exact identity rather than a number to shrug at: 16 extra slot pointers
 (`SLOT_CAPACITY` is 32, the cell has 16 tasks) at 4 bytes, plus the 4-byte
 host pointer.
 
-**What it has NOT been shown to do.** The cell passed on hardware before the
-extraction and has not been flashed since. A refactor of glue that passed on
-silicon is not proved by a build.
+**What it has NOT been shown to do.** Association, DHCP and traffic over a
+real network; and anything on the C6 (`riscv` arm), which is built and
+clippy-clean but has not met a board.
 
 ## The design, and the one decision worth arguing about
 
@@ -77,7 +80,7 @@ single installed host, and it is paid explicitly.
 
 ```toml
 [dependencies]
-rusty_rtos_port-esp-radio = { version = "0.2", features = ["riscv", "esp32c6", "ipc-implementations"] }
+rusty_rtos_port-esp-radio = { version = "0.3", features = ["riscv", "esp32c6", "ipc-implementations"] }
 ```
 
 Exactly one of `xtensa` or `riscv` — a build has one stack layout. With

@@ -257,14 +257,14 @@ published sources and links no FreeRTOS code.
 
 **Tier** critical-path · **Audited** 2026-10-01 (deep) · **v1.0.0 gates** 14/16 · [Full checklist](docs/plans/use-protection-please.md)
 
-`████████████████░░░░` **82%** &nbsp;·&nbsp; 28 Completed · 0 Scheduled · 6 Incomplete · 21 N/A
+`█████████████████░░░` **85%** &nbsp;·&nbsp; 29 Completed · 0 Scheduled · 5 Incomplete · 21 N/A
 
 | Phase | ✅ Completed | 🗓 Scheduled | ⬜ Incomplete | · N/A |
 |---|--:|--:|--:|--:|
 | 0 — Threat modeling | 2 | 0 | 0 | 0 |
 | 1 — Toolchain | 3 | 0 | 0 | 1 |
 | 2 — Supply chain | 7 | 0 | 1 | 0 |
-| 3 — Code level | 6 | 0 | 1 | 0 |
+| 3 — Code level | 7 | 0 | 0 | 0 |
 | 4 — Static analysis | 1 | 0 | 0 | 0 |
 | 5 — Dynamic analysis | 3 | 0 | 0 | 0 |
 | 6 — Fuzzing and properties | 2 | 0 | 2 | 0 |
@@ -274,7 +274,7 @@ published sources and links no FreeRTOS code.
 | 10 — Cryptography | 0 | 0 | 0 | 3 |
 | 11 — CI/CD, release, and operations | 4 | 0 | 1 | 0 |
 | 12 — Compliance controls | 0 | 0 | 0 | 14 |
-| **Total** | **28** | **0** | **6** | **21** |
+| **Total** | **29** | **0** | **5** | **21** |
 
 **Architect** — [Tim Almond](https://github.com/Ttimmahlax) — accountable for this unit's security design; rendered
 <!-- HARDENING-TABLE:END -->

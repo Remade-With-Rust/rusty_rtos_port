@@ -243,6 +243,10 @@ pub fn install(host: &'static dyn RadioHost) {
 /// from a C driver that has no error channel, so the alternative is a null
 /// dereference inside `esp-radio` with no hint of the cause.
 #[inline]
+#[expect(
+    unsafe_code,
+    reason = "reading the installed host back out of its slot"
+)]
 pub fn host() -> &'static dyn RadioHost {
     let p = HOST.load(Ordering::Acquire);
     assert!(
