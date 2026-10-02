@@ -44,6 +44,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use rusty_rtos_core::isr::Woken;
 use rusty_rtos_core::port::Port;
 
+/// Kani proofs of the stack builder (hardening gate H-30).
+#[cfg(kani)]
+mod proofs;
+
 /// Crate version, for manifests and logs.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

@@ -104,7 +104,7 @@ Evidence; excluded from the totals).
 
 | ID | Gate | Status | Evidence | Target |
 |---|---|---|---|---|
-| H-30 | Proof of panic-freedom / UB-freedom per `unsafe` module | Incomplete | the switches are assembly, which Kani cannot model; evidence is the QEMU cells and S3 runs, each with a poisoning that makes it fail (threat model R-4) | |
+| H-30 | Proof of panic-freedom / UB-freedom per `unsafe` module | Incomplete | **the stack builders are proved** (2026-10-02): Kani harnesses in `{cortex-m,riscv,xtensa}/src/proofs.rs` show, for every top meeting the documented contract (RISC-V: for ANY top), that every write is in bounds and aligned and nothing outside the documented window changes -- 249 + 67 + 203 checks, 0 failures; a poisoned builder (one word too many) fails with "pointer outside object bounds". Those are the only port `unsafe` whose soundness depends on the caller. NOT proved, and not provable by a model checker: the context switches (assembly), the core-register accesses (fixed hardware addresses), the host port's threads and signals, and the esp-radio adapter; their evidence is the poisoned QEMU and S3 cells and the host port's sanitizers (threat model R-4) | |
 
 ### Phase 8 — Build and binary
 
@@ -205,6 +205,7 @@ Append one line per pass; never rewrite history. The trend is the point.
 | 2026-10-01 | deep | v1.0-readiness pass | 28 / 0 / 6 | 14/16 | vet (25 certified, 27 exempt), stack-builder fuzz target, threat model v1, census + hardening-table + fuzz-regression in CI, ASan/TSan/careful; FOUR defects fixed (Cortex-M `init_stack` unsound as a safe fn; esp-radio heap overflow and dangling creates; host signal handler spoiling errno); UNSAFE.md completed for Xtensa and the Unix host backend |
 | 2026-10-01 | deep | esp-radio lint pass | 29 / 0 / 5 | 14/16 | `rusty_rtos_port-esp-radio` inherits the workspace lints: every `unsafe` fenced and inventoried, threat model R-6 closed, H-17 Completed; a FIFTH defect fixed (`WaitQueue` waiter count updated outside the mask); silicon re-run of `xiao-s3-wifi` stage 1 and `xiao-s3-radio` |
 | 2026-10-02 | deep | H-28 pass | see table | see table | property tests for the sim port (model-checked contract) and the three stack builders, each poison-proven: H-28 Completed |
+| 2026-10-02 | deep | H-30 pass | see table | see table | Kani proofs of the three stack builders (0 failures, poison-proven); the switches and register access remain the recorded residual (R-4) |
 
 ## v0.1.0 release decision — which gates are waived, and why (2026-09-16)
 

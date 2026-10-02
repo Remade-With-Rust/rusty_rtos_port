@@ -72,6 +72,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(target_arch = "xtensa")]
 pub use xtensa_lx_rt::exception::Context;
 
+/// Kani proofs of the stack builder (hardening gate H-30).
+#[cfg(kani)]
+mod proofs;
+
 /// The saved machine state of one task.
 ///
 /// On Xtensa this is the interrupt trap frame, because the switch happens

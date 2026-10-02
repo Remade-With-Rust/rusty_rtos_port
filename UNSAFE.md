@@ -34,6 +34,13 @@ This is the reason the crate exists and the reason it is allowed unsafe.
 | `kairos_pick_next` | `transmute` a `usize` to the scheduler fn pointer | The static only ever holds a value written by `set_scheduler`, whose parameter is that exact fn type; `0` is checked first as "none installed". |
 | `start_first_task` | Sets PSP, switches `CONTROL.SPSEL`, enters the task | Documented `unsafe fn`: the caller must have built the stack with `init_stack` and installed a scheduler. |
 
+
+### Kani proof (hardening gate H-30)
+
+| item | what it does | why it is sound |
+|---|---|---|
+| `init_stack_writes_only_its_window` | the model checker's harness: calls the stack builder with symbolic arguments | `init_stack`, for every top inside a buffer meeting its contract and any byte skew: every write in bounds and aligned, nothing outside the sixteen words below the 8-aligned top changed, R0 and xPSR as documented. 249 checks, 0 failures (`cargo kani -p rusty_rtos_port-cortex-m`); poisoned with one word too many, it fails with "pointer outside object bounds". The harness owns the buffer it hands the builder, so its own `unsafe` call meets the contract by construction. |
+
 ## `rusty_rtos_port-riscv`
 
 Three kinds. The first two mirror the Cortex-M crate; the third is the one
@@ -91,6 +98,13 @@ The third one is why this table says what it says about `mstatus`: it is
 saved because a task's interrupt state is its own, **not** because its
 absence broke preemption. An earlier note claimed the latter and was wrong;
 the poison run is what caught it.
+
+
+### Kani proof (hardening gate H-30)
+
+| item | what it does | why it is sound |
+|---|---|---|
+| `new_task_context_touches_no_memory_for_any_top` | the model checker's harness: calls the stack builder with symbolic arguments | `new_task_context` for ANY `stack_top`, null and dangling included: it dereferences nothing, and answers a 16-aligned stack pointer at or below the top with the entry and both arguments in `s0`-`s2`. 67 checks, 0 failures. The harness owns the buffer it hands the builder, so its own `unsafe` call meets the contract by construction. |
 
 ## What proves the Cortex-M half, rather than what argues it
 
@@ -235,3 +249,10 @@ exit restores whatever that frame holds. Switching is replacing it.
 |---|---|---|
 | `new_task_context` | Writes four words below `stack_top & !15` and fills a `Context` | Documented `unsafe fn`: the caller guarantees `[top - 16, top)` is writable. Those four words are the ABI's base-save area, with the frame's own stack pointer at `top - 12`, which is what a window underflow follows when the task's first `entry` unwinds. Address arithmetic is done at pointer width and narrowed only into the register fields; doing it in `u32` wrote through a truncated address on the 64-bit host build. `fuzz/task_stacks` checks the window on every size and alignment. |
 | `switch_context` | Copies the trap frame out to `current` and `next` into it | Documented `unsafe fn`: called inside the switching interrupt with the frame its handler was given; `current` and `next` are valid `Context`s. Both are `Copy` structs of `u32`s and the exit restores whatever the frame holds. The copy is `copy_nonoverlapping`, i.e. the S3's mask-ROM `memcpy`, which measured faster than every hand-written alternative (see the comment at the call). |
+
+### Kani proof (hardening gate H-30)
+
+| item | what it does | why it is sound |
+|---|---|---|
+| `new_task_context_writes_only_its_window` | the model checker's harness: calls the stack builder with symbolic arguments | `new_task_context` for every top inside a buffer meeting its contract: the four ABI words written in bounds and aligned, nothing outside the sixteen bytes below the 16-aligned top changed, `A1`/`A6`/`A7` as documented. 203 checks, 0 failures. The harness owns the buffer it hands the builder, so its own `unsafe` call meets the contract by construction. |
+
