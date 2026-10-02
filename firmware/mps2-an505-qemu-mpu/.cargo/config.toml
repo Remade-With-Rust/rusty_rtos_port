@@ -1,0 +1,6 @@
+[build]
+target = "thumbv8m.main-none-eabi"
+
+[target.thumbv8m.main-none-eabi]
+runner = "qemu-system-arm -cpu cortex-m33 -machine mps2-an505 -nographic -semihosting-config enable=on,target=native -kernel"
+rustflags = ["-C", "link-arg=-Tlink.x"]

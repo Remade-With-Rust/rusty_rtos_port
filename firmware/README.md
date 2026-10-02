@@ -20,7 +20,7 @@ meant to be read together.
 |---|---|---|
 | Cortex-M3 (QEMU `lm3s6965evb`) | `cortex-m-rt` + `rusty_rtos_port-cortex-m` | `thumbv7m-none-eabi` |
 | Cortex-M4F / M7 | same | `thumbv7em-none-eabihf` |
-| Cortex-M33 | same | `thumbv8m.main-none-eabihf` |
+| Cortex-M33 (QEMU `mps2-an505`) | same | `thumbv8m.main-none-eabi` / `thumbv8m.main-none-eabihf` |
 | RISC-V RV32 (QEMU `virt`) | `riscv-rt` + `rusty_rtos_port-riscv` | `riscv32imac-unknown-none-elf` |
 | ESP32-C6 / P4 | `esp-hal` + `rusty_rtos_port-riscv` | `riscv32imac-unknown-none-elf` / `riscv32imafc-unknown-none-elf` |
 | ESP32 / ESP32-S3 | `esp-hal` (esp toolchain) + `rusty_rtos_port-xtensa` | `xtensa-esp32-none-elf` / `xtensa-esp32s3-none-elf` |
@@ -37,6 +37,7 @@ whole kill test.
 | `mps2-an385-qemu-kernel` | the Kernel chooses, driven by a tick |
 | `mps2-an385-qemu-preempt` | a blocking call made in the window a `give` opens parks the right task — 200/200, window closed |
 | `mps2-an385-qemu-tickless` | **401 SysTick interrupts -> 0, schedule unmoved** |
+| `mps2-an505-qemu-mpu` | **an unprivileged task's four bad accesses, four refusals** (Cortex-M33, PMSAv8); two poisons FAIL |
 | `riscv32-qemu-switch` · `riscv32-qemu-preempt` | the same two on RV32; 201 switches, zero faults |
 | `xiao-s3-switch` | an Xtensa LX7 switch **on silicon**, 64 witness words a task |
 | `xiao-s3-radio` | the joint `esp-radio-rtos-driver` blocks on |

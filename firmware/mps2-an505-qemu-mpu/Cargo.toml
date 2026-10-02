@@ -1,0 +1,37 @@
+[package]
+name = "mps2-an505-qemu-mpu"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rusty_rtos_port-cortex-m = { path = "../../crates/rusty_rtos_port-cortex-m" }
+# By PATH, as `mps2-an385-qemu-preempt` explains: a cell that gates kernel
+# behaviour must build against the kernel under test, and core has to come
+# from the same place the kernel takes it from.
+rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
+
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+cortex-m-semihosting = "0.5"
+panic-semihosting = "0.6"
+
+[features]
+# The MPU is left OFF, everything else identical. The rogue task's writes
+# then land, and the cell must FAIL -- the proof that a PASS is the MPU's
+# doing and not the harness's.
+poison = []
+# The MPU stays ON, but each task's region spans all of RAM: the too-big
+# region rather than the missing MPU. Must FAIL as well.
+poison-region = []
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+
+[workspace]
