@@ -193,6 +193,10 @@ extern "C" fn kairos_riscv_trampoline_trap() {}
 #[cfg(target_arch = "riscv32")]
 #[expect(unsafe_code, reason = "the context switch itself")]
 #[inline(always)]
+#[allow(
+    clippy::unwrap_or_default,
+    reason = "`Default` for raw pointers is Rust 1.88 and the MSRV is 1.85; `allow`, not `expect`, because only clippys that know the impl fire it"
+)]
 pub unsafe fn switch_context(current: Option<*mut Context>, next: *const Context) {
     // SAFETY: the contract above. `kairos_riscv_switch` writes the outgoing
     // registers through `a0` and loads the incoming ones from `a1`; it never
