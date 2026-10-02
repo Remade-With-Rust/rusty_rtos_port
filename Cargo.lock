@@ -135,7 +135,7 @@ dependencies = [
  "embassy-sync 0.8.0",
  "esp-metadata-generated",
  "riscv",
- "xtensa-lx 0.13.0",
+ "xtensa-lx",
 ]
 
 [[package]]
@@ -332,7 +332,7 @@ name = "rusty_rtos_port-xtensa"
 version = "0.3.1"
 dependencies = [
  "rusty_rtos_core",
- "xtensa-lx 0.12.0",
+ "xtensa-lx",
  "xtensa-lx-rt",
 ]
 
@@ -434,15 +434,6 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "xtensa-lx"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a564fffeb3cd773a524e8d8a5c66ca5e9739ea7450e36a3e6a54dd31f1e652f"
-dependencies = [
- "critical-section",
-]
-
-[[package]]
-name = "xtensa-lx"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e012d667b0aa6d2592ace8ef145a98bff3e76cca7a644f4181ecd7a916ed289b"
@@ -457,7 +448,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07933551193a68b5b0a94a7c428e9626adb559661e0f4b048ac5ec1fa4bed334"
 dependencies = [
  "document-features",
- "xtensa-lx 0.13.0",
+ "xtensa-lx",
  "xtensa-lx-rt-proc-macros",
 ]
 
