@@ -3,6 +3,27 @@
 Security-relevant changes are called out under **Security** (hardening gate
 H-38). Versions follow SemVer; in 0.x a minor bump may break the API.
 
+## 0.3.1 — 2026-10-02
+
+A patch release of the whole family (`-core`, `-cortex-m`, `-riscv`,
+`-xtensa`, `-host`, the facade and `-esp-radio`).
+
+### Fixed
+- `rusty_rtos_port-riscv`: `switch_context` carries a reasoned
+  `allow(clippy::unwrap_or_default)` -- the lint's suggestion needs
+  `Default` for raw pointers, which is Rust 1.88, and the MSRV is 1.85. No
+  code change; found by linting the radio crate's RISC-V arm.
+
+### Security
+- **Kani proofs of the three stack builders** (`*/src/proofs.rs`, built
+  only under `cfg(kani)`): `init_stack` (Cortex-M) and `new_task_context`
+  (RISC-V, Xtensa) write only inside their documented window for every
+  top that meets their contract (RISC-V: for ANY top) -- 519 checks, 0
+  failures, poison-proven. Hardening gate H-30, partly; the switches stay
+  residual risk R-4.
+- **Property tests** (H-28): the sim port against a model of its contract,
+  and the three stack builders over 20,000 seeded inputs each.
+
 ## `rusty_rtos_port-esp-radio` 0.3.0 — 2026-10-01 (first publish)
 
 The rest of the family is unchanged at 0.3.0; this is the radio glue's first

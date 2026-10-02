@@ -20,8 +20,8 @@ categories = ["embedded", "no-std", "hardware-support"]
 rusty_rtos_core = { version = "0.2.0", default-features = false }
 
 # The saved context is architecture-shaped; exactly one of these is on.
-rusty_rtos_port-xtensa = { version = "0.3.0", path = "../rusty_rtos_port-xtensa", default-features = false, optional = true }
-rusty_rtos_port-riscv = { version = "0.3.0", path = "../rusty_rtos_port-riscv", default-features = false, optional = true }
+rusty_rtos_port-xtensa = { version = "0.3.1", path = "../rusty_rtos_port-xtensa", default-features = false, optional = true }
+rusty_rtos_port-riscv = { version = "0.3.1", path = "../rusty_rtos_port-riscv", default-features = false, optional = true }
 
 # The interface being implemented. An exact pin: it is a trait set that a C
 # driver dispatches through, so a minor bump can change the shape without
