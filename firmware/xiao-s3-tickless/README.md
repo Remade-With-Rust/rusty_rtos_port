@@ -54,6 +54,14 @@ pinned. The sleep diagnostics read 20 sleeps, 400 ticks asked and 400 slept,
 the last window measuring 20,014 us against a 20,000 us request — the
 elapsed time is genuinely read off the counter, not assumed.
 
+**Re-run 2026-10-01 with `with_kernel_in_isr` masking.** It used to borrow
+the kernel bare, on the theory that both handlers share one level -- true
+here, and exactly the pattern `xiao-s3-nested` showed corrupting a queue once
+a higher level calls in. It now takes `with_kernel`'s critical section and
+restores the handler's level. Both arms PASS unchanged: control 400 wakeups,
+tickless 0 wakeups and 20 sleeps of 400 ticks, digest `ebb908b74bccb99e` in
+both.
+
 ## ★★ M3c: with a FAIR baseline, tickless LOSES on this part
 
 The table above counts wakeups. Wakeups are not energy, and the honest
