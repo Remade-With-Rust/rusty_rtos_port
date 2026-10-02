@@ -218,6 +218,30 @@ fn mask() -> u32 {
 #[cfg(not(target_arch = "xtensa"))]
 fn unmask(_ps: u32) {}
 
+/// The kernel mask, held for a scope and RESTORED on drop.
+///
+/// The two interrupt handlers below used to borrow the kernel on the theory
+/// that "an interrupt already has exclusivity". That holds only while no
+/// handler ABOVE level 1 calls the kernel. `xiao-s3-nested` shows the
+/// failure when one does: with a level-3 handler using the kernel, the
+/// unmasked level-1 path read 493 nested entries, 304 order violations and
+/// a corrupted queue. Masking costs one `rsil` and one `wsr.ps`.
+struct Masked(u32);
+
+impl Masked {
+    #[inline(always)]
+    fn new() -> Self {
+        Self(mask())
+    }
+}
+
+impl Drop for Masked {
+    #[inline(always)]
+    fn drop(&mut self) {
+        unmask(self.0);
+    }
+}
+
 /// Install the kernel. Once, before anything else touches it.
 pub fn install(kernel: K) {
     let saved = mask();
@@ -271,10 +295,14 @@ fn switching_interrupt(trap_frame: &mut Context) {
         return;
     }
 
+    // Masked for the decision AND the swap: a higher-level handler that
+    // calls the kernel must not see a half-made switch.
+    let _masked = Masked::new();
+
     // Decide AND commit, here, in one step.
     let moved = {
-        // SAFETY: interrupts are already masked -- this is an interrupt
-        // handler -- and there is one core, so this borrow is exclusive.
+        // SAFETY: masked to the kernel level, one core: this borrow is
+        // exclusive against tasks and every interrupt that uses the kernel.
         let k = unsafe { (*KERNEL.0.get()).as_mut() };
         match k {
             None => None,
@@ -496,8 +524,8 @@ extern "C" fn on_tick() {
         }
     }
     let want = {
-        // SAFETY: an interrupt handler on a single core; interrupts at this
-        // level are masked while it runs.
+        let _masked = Masked::new();
+        // SAFETY: masked to the kernel level, on a single core.
         let k = unsafe { (*KERNEL.0.get()).as_mut() };
         match k {
             None => false,

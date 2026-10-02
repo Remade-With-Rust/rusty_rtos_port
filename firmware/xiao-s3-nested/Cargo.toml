@@ -1,0 +1,39 @@
+[package]
+name = "xiao-s3-nested"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Nested interrupts on Kairos: a level-3 ISR preempting a level-1 ISR, both using the kernel, on an ESP32-S3."
+
+[dependencies]
+rusty_rtos_port-xtensa = { path = "../../crates/rusty_rtos_port-xtensa", default-features = false }
+# By path, like every cell here.
+rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
+
+esp-hal = { version = "=1.2.1", features = ["esp32s3", "unstable"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", default-features = false, features = [
+    "esp32s3",
+    "jtag-serial",
+] }
+esp-backtrace = { version = "=0.20.0", features = [
+    "esp32s3",
+    "panic-handler",
+    "println",
+] }
+
+[features]
+# The poison arm: the level-1 handler enters the kernel unmasked.
+poison = []
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+debug = true
+
+[workspace]
