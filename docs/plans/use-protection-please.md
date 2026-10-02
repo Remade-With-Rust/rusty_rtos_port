@@ -97,7 +97,7 @@ Evidence; excluded from the totals).
 |---|---|---|---|---|
 | H-26 | ★ Fuzz target per public parser, decoder, or message handler | Completed | `fuzz/fuzz_targets/task_stacks.rs` (seeded corpus): every port's `unsafe` stack builder on exactly-sized heap stacks of every size and alignment -- ASan for writes past the buffer, a canary for writes outside the documented window, the frame values where the switch reads them. 774,184 inputs in 60 s, no finding | |
 | H-27 | ★ Continuous fuzzing with no open crashes | Incomplete | the nightly job exists (`scheduled.yml`); the gate needs 30 days of it, which starts when it is pushed | |
-| H-28 | Property tests cover the documented invariants | Incomplete | the stack builders' window invariants are checked by `fuzz/task_stacks`, and register preservation by the poisoned QEMU cells, but there are no property tests as such | |
+| H-28 | Property tests cover the documented invariants | Completed | `rusty_rtos_port-core/tests/sim_properties.rs`: `SimPort` against a model of the sim contract (nesting floor, outermost exits counted only on a task after start and outside an unwind, a tick every 16th, unwinds tallied and handed back, ticks and yields taken once) after every one of 320,000 random operations; poisoned by raising the tick one exit late, caught at step 4,270. `{cortex-m,riscv,xtensa}/tests/stack_properties.rs`: each stack builder over 20,000 seeded tops and sizes -- nothing written outside its documented window, the documented alignment, the frame the first switch-in loads; poisoned by moving R0 one slot, caught at case 0. The fuzz target keeps the same assertions under libFuzzer | |
 | H-29 | Mutation and/or differential testing on critical modules | Completed | the sim port is diffed against the C Posix port through the kernel's trace: 8,408,764 lines across nine scenarios and the exit/yield counters identical, 100,000 ticks each (ledger) | |
 
 ### Phase 7 — Formal verification
@@ -204,6 +204,7 @@ Append one line per pass; never rewrite history. The trend is the point.
 | 2026-09-09 | survey + tool probes | kairos (K1 pass) | 12 / 0 / 24 | 9 | K1: the trace differential against the C kernel is live and is this unit's strongest evidence; deny, audit and Miri run on the developer box |
 | 2026-10-01 | deep | v1.0-readiness pass | 28 / 0 / 6 | 14/16 | vet (25 certified, 27 exempt), stack-builder fuzz target, threat model v1, census + hardening-table + fuzz-regression in CI, ASan/TSan/careful; FOUR defects fixed (Cortex-M `init_stack` unsound as a safe fn; esp-radio heap overflow and dangling creates; host signal handler spoiling errno); UNSAFE.md completed for Xtensa and the Unix host backend |
 | 2026-10-01 | deep | esp-radio lint pass | 29 / 0 / 5 | 14/16 | `rusty_rtos_port-esp-radio` inherits the workspace lints: every `unsafe` fenced and inventoried, threat model R-6 closed, H-17 Completed; a FIFTH defect fixed (`WaitQueue` waiter count updated outside the mask); silicon re-run of `xiao-s3-wifi` stage 1 and `xiao-s3-radio` |
+| 2026-10-02 | deep | H-28 pass | see table | see table | property tests for the sim port (model-checked contract) and the three stack builders, each poison-proven: H-28 Completed |
 
 ## v0.1.0 release decision — which gates are waived, and why (2026-09-16)
 
