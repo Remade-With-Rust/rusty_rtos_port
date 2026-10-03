@@ -18,6 +18,10 @@ rusty_rtos_core = { version = "0.2.0", default-features = false }
 
 [features]
 default = []
+# The FLASH profile, as `rusty_rtos_kernel-core`'s feature of the same name:
+# keeps the critical-section pair out of line (one body, a `jal` per site).
+# Without it the pair is `#[inline]` -- the speed profile.
+small = []
 
 [lints]
 workspace = true

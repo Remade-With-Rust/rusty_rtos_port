@@ -645,7 +645,8 @@ impl Port for RiscvPort {
         }
     }
 
-    /// Out of line on purpose, and C's is a MACRO -- the asymmetry is priced.
+    /// In line on the SPEED profile, out of line under `small` -- and C's is a
+    /// MACRO, so the asymmetry is priced both ways.
     ///
     /// Our arm makes **111 calls** to this pair; the C arm has no
     /// `vTaskEnterCritical` symbol at all and 237 INLINE `csr` ops, because
@@ -654,11 +655,20 @@ impl Port for RiscvPort {
     /// interrupt state, which C never does (C unconditionally re-enables).
     ///
     /// `#[inline]` on the pair was measured on 2026-09-25: **+1,406 B** as
-    /// written, and **+2,164 B** even cut down to C's exact semantics. `mv`
-    /// falls 782 -> 592 and 566 respectively, so the call really is costing
-    /// register pressure -- and the duplicated body costs far more. One body
-    /// plus 111 `jal` beats 111 copies. C can afford to inline because its
-    /// primitive is four instructions and ours is nine.
+    /// written, and **+2,164 B** even cut down to C's exact semantics, and
+    /// declined -- one body plus 111 `jal` beat 111 copies while there was ONE
+    /// profile and the K3 flash row rode on it. Since 2026-10-02 the flash row
+    /// is carried by the kernel's `small` profile (1.24x, inside the target),
+    /// and the default is the speed profile. Re-priced 2026-10-03 on the
+    /// shipped port (`bench/tick-work`, `--features real-port`): the opaque
+    /// call is not just `mv`/`jal`/`ret` -- every queue and TCB field read
+    /// before it is re-read and re-checked after it, because LLVM cannot see
+    /// that the port touches only itself. In line, 13 rows fall by 284
+    /// instructions: `peek_ok` 73 -> 41, `queue_roundtrip` 152 -> 120,
+    /// `block_cycle` 947 -> 855, `scaffolding` 22 -> 13. Flash +1,934 B on the
+    /// speed profile; under `small` (this crate's feature, which the flash
+    /// profile turns on) nothing changes.
+    #[cfg_attr(not(feature = "small"), inline)]
     fn enter_critical(&self) {
         let was = mask_interrupts();
         // Only the OUTERMOST section's state is kept: an inner mask reports
@@ -669,11 +679,12 @@ impl Port for RiscvPort {
         }
     }
 
-    /// See [`RiscvPort::enter_critical`] for why this is out of line.
+    /// See [`RiscvPort::enter_critical`] for when this is in line.
     ///
     /// The `exits` counter is read only by a trace sink, and removing it
-    /// entirely measured **8 B** -- so it is not worth gating: out of line, the
-    /// body costs ONCE, not once per call site.
+    /// entirely measured **8 B** out of line, where the body costs ONCE. In
+    /// line it is an `amoadd` per site; unpriced there.
+    #[cfg_attr(not(feature = "small"), inline)]
     fn exit_critical(&self) {
         let n = self.nesting.load(Ordering::Relaxed).saturating_sub(1);
         self.nesting.store(n, Ordering::Relaxed);

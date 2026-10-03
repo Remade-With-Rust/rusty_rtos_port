@@ -3,6 +3,19 @@
 Security-relevant changes are called out under **Security** (hardening gate
 H-38). Versions follow SemVer; in 0.x a minor bump may break the API.
 
+## Unreleased
+
+### Added
+- `rusty_rtos_port-riscv`: a `small` feature, the flash profile, matching
+  `rusty_rtos_kernel-core`'s. Without it `RiscvPort::enter_critical` and
+  `exit_critical` are `#[inline]`. As opaque calls they cost more than the
+  call: every queue and TCB field read before one was re-read and re-checked
+  after it. On the shipped port (`bench/tick-work --features real-port`)
+  thirteen rows fall by 284 instructions (`peek_ok` 73 -> 41,
+  `queue_roundtrip` 152 -> 120, `block_cycle` 947 -> 855); `bench/kernel-flash`
+  +1,934 B on the speed profile and unchanged under `small` (17,666 B).
+  Enable `small` with the kernel's to keep the old shape.
+
 ## 0.3.1 — 2026-10-02
 
 A patch release of the whole family (`-core`, `-cortex-m`, `-riscv`,
