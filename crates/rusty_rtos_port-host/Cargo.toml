@@ -19,7 +19,7 @@ categories = ["os", "simulation"]
 rusty_rtos_core = { version = "0.2.0", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 # The Unix half of the same job. Declarations of the platform's own thread and
 # signal calls -- the direct analogue of `windows-sys` above, and not a C build:
