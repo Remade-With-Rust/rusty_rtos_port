@@ -5,7 +5,24 @@ H-38). Versions follow SemVer; in 0.x a minor bump may break the API.
 
 ## Unreleased
 
+### Fixed
+- `rusty_rtos_port-host`: a reused task slot no longer inherits its last
+  occupant's run permit or freeze. The tick can freeze a thread between its
+  grant and its taking it; if that task is then deleted, the slot kept both
+  flags. A standing grant let the new thread run uninvited while the kernel
+  had another task current (Linux: "this thread is task 77, the kernel
+  believes 43", `death.c`); a standing freeze made the new occupant's first
+  grant a thaw of nothing, so the kernel's current task ran nowhere until the
+  next tick (`TimerDemo`'s exact-tick checks). Clearing one alone produced the
+  other's failure. The C ABI cell on Linux pthreads now passes 25/25 at
+  30,000 ticks with the case met and cleared in every run; it had failed or
+  broken identity in every run. `stale_grants()` counts the occurrences.
+
 ### Added
+- `rusty_rtos_port-host`: `set_core` / `core`, the core the run permit
+  stands for, reported as `Port::core_id`. A two-core cell passes the one
+  permit between two kernel cores (virtual cores: every two-core kernel path,
+  never two threads in the kernel at once).
 - `rusty_rtos_port-riscv`: a `small` feature, the flash profile, matching
   `rusty_rtos_kernel-core`'s. Without it `RiscvPort::enter_critical` and
   `exit_critical` are `#[inline]`. As opaque calls they cost more than the

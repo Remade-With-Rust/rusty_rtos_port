@@ -901,7 +901,30 @@ pub fn init_task(index: usize, entry: extern "C" fn(usize) -> !) {
         ORPHANS.fetch_add(1, Ordering::Relaxed);
         // Wake the outgoing occupant so it can see its generation has
         // passed and settle; and give its handle back.
-        if let Ok(granted) = slot.granted.lock() {
+        //
+        // And clear the two flags that describe the OLD thread, which a new
+        // occupant must not inherit. The tick can freeze a thread in the gap
+        // between its grant and its waking to take it; if that task is then
+        // deleted, the slot still says both "granted" and "frozen":
+        //
+        // * a standing GRANT lets the new thread run the moment it starts,
+        //   uninvited, while the kernel has somebody else current -- on
+        //   Linux, "this thread is task 77, the kernel believes 43";
+        // * a standing FREEZE makes the new occupant's first grant try to
+        //   THAW a thread that is not frozen -- a no-op -- instead of
+        //   handing it the permit, so the kernel's current task runs nowhere
+        //   until the next tick, and every tick it is chosen is lost
+        //   (`TimerDemo`'s exact-tick ISR checks fail).
+        //
+        // Clearing one alone produced the other's failure; both were
+        // measured, with `death.c` deleting a SUICID task the tick had just
+        // interrupted. The counter says how often a reuse found either.
+        if let Ok(mut granted) = slot.granted.lock() {
+            let stale_grant = core::mem::replace(&mut *granted, false);
+            let stale_freeze = slot.frozen.swap(false, Ordering::SeqCst);
+            if stale_grant || stale_freeze {
+                STALE_GRANTS.fetch_add(1, Ordering::Relaxed);
+            }
             drop(granted);
             slot.wake.notify_all();
         }
@@ -1008,6 +1031,16 @@ const STACK_BYTES: usize = 128 * 1024;
 /// instead is what FreeRTOS's Posix port does with `pthread_cancel`, and
 /// is the obvious next step for this port.
 static ORPHANS: AtomicU64 = AtomicU64::new(0);
+
+/// Slots handed to a new occupant while a grant to, or a freeze of, the old
+/// one was still standing (see `init_task`).
+static STALE_GRANTS: AtomicU64 = AtomicU64::new(0);
+
+/// How many slots `init_task` found holding a stale grant or freeze.
+#[must_use]
+pub fn stale_grants() -> u64 {
+    STALE_GRANTS.load(Ordering::Relaxed)
+}
 
 /// How many task threads have been orphaned by a slot being reused.
 #[must_use]
@@ -1215,6 +1248,32 @@ pub fn release_task(index: usize) {
     }
 }
 
+// ------------------------------------------------------ virtual cores --
+
+/// Which kernel core the code holding the run permit is running as.
+///
+/// This port runs ONE task thread at a time, whatever the kernel's core
+/// count. A two-core cell keeps that, and takes turns: it tells the port
+/// which core the permit currently stands for, and the kernel reads it back
+/// through [`Port::core_id`] -- `portGET_CORE_ID()`. Two cores this way are
+/// virtual: every two-core path in the kernel is exercised (per-core
+/// current tasks, cross-core yields, selection that skips a task the other
+/// core holds), while the kernel is still never entered by two threads at
+/// once. The policy of WHEN a turn passes belongs to the cell; this is only
+/// where the answer is kept.
+static CORE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Make the run permit stand for kernel core `core` from now on.
+pub fn set_core(core: u8) {
+    CORE.store(core, Ordering::SeqCst);
+}
+
+/// The kernel core the run permit currently stands for.
+#[must_use]
+pub fn core() -> u8 {
+    CORE.load(Ordering::SeqCst)
+}
+
 // -------------------------------------------------------------- the port --
 
 /// The host [`Port`].
@@ -1348,6 +1407,12 @@ impl Port for HostPort {
         // one context runs at a time -- so if the tick is inside, the
         // caller IS the tick.
         IN_TICK.load(Ordering::SeqCst)
+    }
+
+    /// `portGET_CORE_ID()`: the core the run permit stands for -- always 0
+    /// unless a two-core cell has passed a turn ([`set_core`]).
+    fn core_id(&self) -> u8 {
+        core()
     }
 
     fn count_tick(&self) {
