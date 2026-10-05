@@ -3,7 +3,10 @@
 Security-relevant changes are called out under **Security** (hardening gate
 H-38). Versions follow SemVer; in 0.x a minor bump may break the API.
 
-## Unreleased
+## 0.3.2 — 2026-10-04
+
+The host port's Linux slot fix and its two-core hook, and the RISC-V port's
+`small` profile.
 
 ### Fixed
 - `rusty_rtos_port-host`: a reused task slot no longer inherits its last
