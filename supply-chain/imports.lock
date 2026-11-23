@@ -28,8 +28,8 @@ user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.rusty_rtos_core]]
-version = "0.2.2"
-when = "2026-10-01"
+version = "0.2.8"
+when = "2026-11-23"
 user-id = 427321
 user-login = "Ttimmahlax"
 user-name = "farmer_timmm"
