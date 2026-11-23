@@ -282,28 +282,28 @@ checksum = "10e25b7fc42fe14b8c57b02fbab467875d19d51587dbc3ab7d80fab228abcb28"
 
 [[package]]
 name = "rusty_rtos_port"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "rusty_rtos_port-core",
 ]
 
 [[package]]
 name = "rusty_rtos_port-core"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "rusty_rtos_core",
 ]
 
 [[package]]
 name = "rusty_rtos_port-cortex-m"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "rusty_rtos_core",
 ]
 
 [[package]]
 name = "rusty_rtos_port-esp-radio"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "esp-radio-rtos-driver",
  "rusty_rtos_core",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "rusty_rtos_port-host"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "libc",
  "rusty_rtos_core",
@@ -322,14 +322,14 @@ dependencies = [
 
 [[package]]
 name = "rusty_rtos_port-riscv"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "rusty_rtos_core",
 ]
 
 [[package]]
 name = "rusty_rtos_port-xtensa"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "rusty_rtos_core",
  "xtensa-lx 0.12.0",
