@@ -17,7 +17,7 @@ categories = ["embedded", "no-std", "hardware-support"]
 # crate deliberately does NOT depend on rusty_rtos_kernel-core — the whole
 # point of the RadioHost seam is that the kernel's const generics stay on the
 # consumer's side of it.
-rusty_rtos_core = { version = "0.2.0", default-features = false }
+rusty_rtos_core = { version = "0.2.8", default-features = false }
 
 # The saved context is architecture-shaped; exactly one of these is on.
 rusty_rtos_port-xtensa = { version = "0.3.2", path = "../rusty_rtos_port-xtensa", default-features = false, optional = true }
